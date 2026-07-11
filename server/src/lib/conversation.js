@@ -305,6 +305,19 @@ function buildSystemInstruction({ missingKeys, adviceFlagThisTurn }) {
 // Gemini call with model-name fallback (tries MODEL_CANDIDATES in order, caches the first that works)
 // ---------------------------------------------------------------------------------------------
 
+const RETRY_BACKOFF_MS = 500;
+
+// 503 (overloaded) and 429 (rate limited) are Google-side and often clear within under a second —
+// worth one same-model retry before burning a whole fallback slot on them. Anything else (4xx
+// config/schema errors, etc.) won't be fixed by retrying, so fail straight to the next candidate.
+function isRetryableStatus(err) {
+  return err && (err.status === 503 || err.status === 429);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function sendInterviewTurn(session, transcript, systemInstruction) {
   const candidates = cachedModelName
     ? [cachedModelName, ...MODEL_CANDIDATES.filter((m) => m !== cachedModelName)]
@@ -312,38 +325,45 @@ async function sendInterviewTurn(session, transcript, systemInstruction) {
 
   let lastErr;
   for (const modelName of candidates) {
-    try {
-      const model = genAI.getGenerativeModel(
-        {
-          model: modelName,
-          systemInstruction,
-          tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
-        },
-        { timeout: GEMINI_REQUEST_TIMEOUT_MS }
-      );
-      const chat = model.startChat({ history: session.history || [] });
-      const result = await chat.sendMessage(transcript);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const model = genAI.getGenerativeModel(
+          {
+            model: modelName,
+            systemInstruction,
+            tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
+          },
+          { timeout: GEMINI_REQUEST_TIMEOUT_MS }
+        );
+        const chat = model.startChat({ history: session.history || [] });
+        const result = await chat.sendMessage(transcript);
 
-      let response = result.response;
-      let toolCalls = (response.functionCalls() || []).map((fc) => ({ tool: fc.name, args: fc.args || {} }));
-      let replyText = (response.text() || '').trim();
+        let response = result.response;
+        let toolCalls = (response.functionCalls() || []).map((fc) => ({ tool: fc.name, args: fc.args || {} }));
+        let replyText = (response.text() || '').trim();
 
-      // If Gemini returned only function call(s) with no accompanying spoken text, do one
-      // follow-up round trip sending synthetic function responses so it can produce the
-      // natural-language reply (standard Gemini function-calling pattern).
-      if (toolCalls.length > 0 && !replyText) {
-        const functionResponseParts = toolCalls.map((tc) => ({
-          functionResponse: { name: tc.tool, response: { status: 'recorded' } },
-        }));
-        const followUp = await chat.sendMessage(functionResponseParts);
-        replyText = (followUp.response.text() || '').trim();
+        // If Gemini returned only function call(s) with no accompanying spoken text, do one
+        // follow-up round trip sending synthetic function responses so it can produce the
+        // natural-language reply (standard Gemini function-calling pattern).
+        if (toolCalls.length > 0 && !replyText) {
+          const functionResponseParts = toolCalls.map((tc) => ({
+            functionResponse: { name: tc.tool, response: { status: 'recorded' } },
+          }));
+          const followUp = await chat.sendMessage(functionResponseParts);
+          replyText = (followUp.response.text() || '').trim();
+        }
+
+        cachedModelName = modelName;
+        session.history = await chat.getHistory();
+        return { toolCalls, replyText, modelName };
+      } catch (err) {
+        lastErr = err;
+        if (attempt === 0 && isRetryableStatus(err)) {
+          await sleep(RETRY_BACKOFF_MS);
+          continue;
+        }
+        break;
       }
-
-      cachedModelName = modelName;
-      session.history = await chat.getHistory();
-      return { toolCalls, replyText, modelName };
-    } catch (err) {
-      lastErr = err;
     }
   }
   throw lastErr;
