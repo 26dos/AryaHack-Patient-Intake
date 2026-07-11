@@ -57,74 +57,52 @@ SMS is attempted through Twilio. Resend email is also supported and is the more 
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  Patient[Patient phone] <--> Twilio[Twilio Voice, STT, SMS]
-  Twilio -->|POST /voice/incoming and /voice/gather| Server[Node.js Express server]
+```text
+Patient phone
+  <-> Twilio Voice, speech-to-text, SMS
+  ->  Express voice webhooks
+      - /voice/incoming
+      - /voice/gather
+      - /voice/status
 
-  Server --> Voice[Voice webhook routes]
-  Voice --> Conversation[Gemini conversation engine]
-  Conversation --> Guardrails[Emergency and clinical-advice guardrails]
-  Conversation --> ToolCalls[Structured intake tool calls]
+Express server
+  -> Gemini conversation engine
+      - greeting
+      - consent gate
+      - structured intake tool calls
+      - wrap-up
+  -> Guardrails
+      - emergency keyword interrupt
+      - clinical-advice refusal
+  -> ElevenLabs TTS
+      - temporary /audio/:id clips
+      - Twilio <Say> fallback
+  -> Supabase mock EHR
+      - intake_records
+      - call_events
+      - atomic JSONB field merge
 
-  Voice --> Supabase[(Supabase mock EHR)]
-  Voice --> TTS[ElevenLabs TTS]
-  TTS --> AudioStore[In-memory audio store]
-  AudioStore --> AudioRoute[/audio/:id]
-  AudioRoute --> Twilio
+Front-desk dashboard
+  -> /api/records
+  -> Supabase record status and field completeness
 
-  FrontDesk[Front-desk dashboard] -->|record status and completeness| Server
-  Server --> DashboardApi[/api/records]
-  DashboardApi --> Supabase
-  Voice -->|completion summary| Confirm[Twilio SMS and Resend email]
+Completion summary
+  -> Twilio SMS attempt
+  -> Resend email when configured
 ```
 
 ## End-to-end flow
 
-```mermaid
-sequenceDiagram
-  participant P as Patient
-  participant T as Twilio
-  participant S as Express server
-  participant C as Conversation engine
-  participant DB as Supabase
-  participant L as ElevenLabs
-  participant D as Dashboard
-  participant E as Resend
-
-  S->>T: Place outbound test call
-  T->>P: Ring patient
-  T->>S: POST /voice/incoming
-  S->>DB: Upsert intake record as in_progress
-  S->>C: runTurn(null, current snapshot)
-  C-->>S: Greeting
-  S->>L: Synthesize speech
-  S-->>T: TwiML Gather + Play/Say
-
-  P->>T: Speaks response
-  T->>S: POST /voice/gather with SpeechResult
-  S->>C: runTurn(transcript, current snapshot)
-  C->>C: Emergency check, consent gate, stage machine
-  C-->>S: Spoken reply + record_* tool calls
-  S->>DB: Atomic JSONB field merge
-  D->>S: Poll /api/records
-  S-->>D: Latest records + completeness
-
-  loop Until required fields are resolved
-    P->>T: Answers next question
-    T->>S: Transcript
-    S->>C: Next intake turn
-    C-->>S: Reply + tool calls
-    S->>DB: Field/event upserts
-    S-->>T: Next TwiML Gather
-  end
-
-  S-->>T: Wrap-up message and hangup
-  T->>S: POST /voice/status completed
-  S->>DB: Mark completed
-  S->>T: Attempt SMS summary
-  S->>E: Send email summary when configured
-```
+1. `npm run test-call` asks Twilio to place an outbound call.
+2. Twilio rings the patient and posts to `/voice/incoming`.
+3. The server creates or updates an `intake_records` row as `in_progress`.
+4. The conversation engine sends the greeting, then requires affirmative consent.
+5. Twilio `<Gather input="speech">` captures each patient response and posts transcripts to `/voice/gather`.
+6. Gemini returns a short spoken reply plus structured `record_*` tool calls.
+7. The voice route maps tool calls into Supabase field upserts and append-only call events.
+8. The dashboard polls `/api/records` and shows status, completeness, captured fields, and missing required fields.
+9. When required fields are resolved, the agent wraps up and hangs up.
+10. Twilio posts `completed` to `/voice/status`; the server marks the record complete, attempts SMS, and sends Resend email when configured.
 
 ## Technical highlights
 
