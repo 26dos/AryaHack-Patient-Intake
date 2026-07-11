@@ -61,19 +61,16 @@ import { checkEmergency, looksLikeClinicalAdviceRequest } from './guardrails.js'
 
 const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
 
-// Model name fallback list. NOTE: as of this build (2026-07-11), the two names the task asked
-// us to validate first — 'gemini-1.5-flash' and 'gemini-1.5-pro' — both 404 against this
-// project's API key ("no longer available" / "not found for API version v1beta"); confirmed via
-// a raw ListModels call that the key itself is valid and live, just scoped to a newer model
-// generation. 'gemini-flash-latest' and 'gemini-3-flash-preview' were confirmed working live and
-// are tried first; the two originally-requested legacy names are kept at the end of the list in
-// case this ever runs against an older-generation API key/project.
+// Model name fallback list. 'gemini-2.0-flash', 'gemini-1.5-flash', and 'gemini-1.5-pro' all 404
+// against this project's API key (confirmed live, not a transient issue — this key is scoped to
+// a newer model generation) and were previously kept at the end of this list "just in case."
+// That's actively harmful: on a real call, a transient hiccup on the primary model burned through
+// three guaranteed-404 candidates before failing, and that extra latency is a likely cause of a
+// live demo call getting cut off with Twilio's own generic error message instead of our graceful
+// fallback line. Only candidates confirmed working against this key belong here.
 export const MODEL_CANDIDATES = [
   'gemini-flash-latest',
   'gemini-3-flash-preview',
-  'gemini-2.0-flash',
-  'gemini-1.5-flash',
-  'gemini-1.5-pro',
 ];
 
 let cachedModelName = null;
