@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Riverside Cardiology — Front Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#E9EEF0; --surface:#FFFFFF; --surface-2:#F5F8F9;
+    --ink:#10242E; --ink-2:#48606A; --ink-3:#8698A0;
+    --line:#DBE4E7; --line-2:#EAF0F1;
+    --teal:#0E7C86; --teal-deep:#0A5B63; --teal-soft:#E1F0F0; --teal-live:#15A3AE;
+    --ready:#2C7A57; --ready-soft:#E2EFE8;
+    --attn:#A9670A; --attn-soft:#F8EBD6;
+    --alert:#BE3830; --alert-soft:#FAE5E3;
+    --radius:10px; --radius-lg:16px;
+    --shadow:0 1px 2px rgba(16,36,46,.04), 0 8px 24px rgba(16,36,46,.06);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:'IBM Plex Sans',system-ui,sans-serif;
+    background:var(--paper); color:var(--ink);
+    -webkit-font-smoothing:antialiased; font-size:14px; line-height:1.5;
+  }
+  .mono{font-family:'IBM Plex Mono',monospace;font-feature-settings:"tnum"}
+  button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+  :focus-visible{outline:2px solid var(--teal);outline-offset:2px;border-radius:4px}
+
+  .app{display:grid;grid-template-rows:auto 1fr;height:100vh;min-height:0}
+
+  .topbar{display:flex;align-items:center;gap:20px;padding:14px 22px;background:var(--surface);border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:11px}
+  .brand .mark{width:30px;height:30px;border-radius:8px;background:var(--teal);display:grid;place-items:center;color:#fff;flex:none}
+  .brand .mark svg{width:19px;height:19px}
+  .brand h1{font-size:15px;font-weight:600;letter-spacing:-.01em;margin:0;line-height:1.15}
+  .brand .sub{font-size:11.5px;color:var(--ink-3);letter-spacing:.02em}
+  .topbar .date{margin-left:auto;font-size:12.5px;color:var(--ink-2)}
+  .topbar .date .mono{color:var(--ink);font-weight:500}
+
+  .callchip{display:flex;align-items:center;gap:10px;padding:6px 12px 6px 10px;border:1px solid var(--line);border-radius:999px;background:var(--surface-2);font-size:12px;color:var(--ink-3);transition:all .3s}
+  .callchip .ecg{width:52px;height:20px;opacity:.35}
+  .callchip.on{border-color:var(--teal-live);background:var(--teal-soft);color:var(--teal-deep);font-weight:500}
+  .callchip.on .ecg{opacity:1}
+  .callchip .dot{width:7px;height:7px;border-radius:50%;background:var(--ink-3)}
+  .callchip.on .dot{background:var(--teal-live);animation:blink 1.1s infinite}
+  @keyframes blink{50%{opacity:.25}}
+
+  .main{display:grid;grid-template-columns:322px 1fr;min-height:0}
+
+  .roster{background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+  .roster-head{padding:18px 20px 12px}
+  .roster-head .eyebrow{font-size:10.5px;font-weight:600;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3)}
+  .roster-head h2{margin:3px 0 0;font-size:19px;font-weight:600;letter-spacing:-.02em}
+  .roster-head .count{font-size:12px;color:var(--ink-2);margin-top:2px}
+  .roster-head .count b{color:var(--attn);font-weight:600}
+  .roster-list{overflow-y:auto;padding:4px 12px 16px;flex:1;min-height:0}
+  .sectlabel{font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);padding:14px 8px 6px}
+
+  .prow{width:100%;text-align:left;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding:11px 12px;border-radius:var(--radius);border:1px solid transparent;transition:background .15s;margin-bottom:2px}
+  .prow:hover{background:var(--surface-2)}
+  .prow.active{background:var(--teal-soft);border-color:#C9E4E4}
+  .prow .time{font-size:12px;color:var(--ink-2);width:54px}
+  .prow .who .nm{font-weight:600;font-size:13.5px;letter-spacing:-.01em}
+  .prow .who .rsn{font-size:11.5px;color:var(--ink-3)}
+  .pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:500;white-space:nowrap}
+  .pill .d{width:6px;height:6px;border-radius:50%}
+  .pill.ready{background:var(--ready-soft);color:var(--ready)} .pill.ready .d{background:var(--ready)}
+  .pill.attn{background:var(--attn-soft);color:var(--attn)} .pill.attn .d{background:var(--attn)}
+  .pill.alert{background:var(--alert-soft);color:var(--alert)} .pill.alert .d{background:var(--alert)}
+  .pill.live{background:var(--teal-soft);color:var(--teal-deep)} .pill.live .d{background:var(--teal-live);animation:blink 1.1s infinite}
+  .pill.wait{background:var(--surface-2);color:var(--ink-3);border:1px solid var(--line)} .pill.wait .d{background:var(--ink-3)}
+
+  .record-wrap{overflow-y:auto;min-height:0;padding:22px 26px 90px}
+  .record{max-width:760px;margin:0 auto}
+
+  .rhead{display:flex;align-items:flex-start;gap:18px;margin-bottom:6px}
+  .rhead .patient{flex:1}
+  .rhead h2{margin:0;font-size:26px;font-weight:700;letter-spacing:-.025em}
+  .rhead .meta{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:8px;font-size:12.5px;color:var(--ink-2)}
+  .rhead .meta .k{color:var(--ink-3);margin-right:5px}
+  .progress-card{flex:none;width:150px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:13px 15px;box-shadow:var(--shadow);text-align:center}
+  .progress-card .num{font-size:26px;font-weight:700;letter-spacing:-.02em;line-height:1}
+  .progress-card .num .of{font-size:15px;color:var(--ink-3);font-weight:500}
+  .progress-card .lbl{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-top:4px}
+  .bar{height:4px;border-radius:2px;background:var(--line-2);margin-top:9px;overflow:hidden}
+  .bar > i{display:block;height:100%;background:var(--teal);width:0;transition:width .5s cubic-bezier(.4,0,.2,1)}
+
+  .phasestrip{display:none;align-items:center;gap:0;margin:16px 0 4px;padding:10px 4px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);overflow-x:auto}
+  .phasestrip.show{display:flex}
+  .ph{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink-3);white-space:nowrap;flex:none}
+  .ph .n{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line);display:grid;place-items:center;font-size:9px;font-weight:600}
+  .ph.done{color:var(--ready)} .ph.done .n{background:var(--ready);border-color:var(--ready);color:#fff}
+  .ph.now{color:var(--teal-deep);font-weight:600} .ph.now .n{border-color:var(--teal-live);background:var(--teal-soft);color:var(--teal-deep)}
+  .ph .sep{width:16px;height:1px;background:var(--line);margin:0 6px;flex:none}
+
+  .banner{display:none;align-items:center;gap:11px;margin:18px 0 2px;padding:11px 15px;border-radius:var(--radius)}
+  .banner.show{display:flex}
+  .banner svg{width:18px;height:18px;flex:none}
+  .banner .body{font-size:13px}
+  .banner.amber{background:var(--attn-soft);border:1px solid #EAD2A8;border-left:3px solid var(--attn)}
+  .banner.amber svg{color:var(--attn)} .banner.amber b{color:var(--attn)} .banner.amber .body{color:#7a520a}
+
+  .group{margin-top:22px}
+  .group > h3{font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);margin:0 0 9px;display:flex;align-items:center;gap:8px}
+  .group > h3 .ln{flex:1;height:1px;background:var(--line-2)}
+
+  .field{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:13px 16px;margin-bottom:8px;box-shadow:var(--shadow);display:grid;grid-template-columns:1fr auto;gap:4px 14px;align-items:start;opacity:.45;transition:opacity .4s, box-shadow .4s, border-color .4s}
+  .field.filled{opacity:1}
+  .field.pending{opacity:.5}
+  .field.just{animation:beat .7s cubic-bezier(.2,.7,.3,1)}
+  @keyframes beat{0%{box-shadow:0 0 0 0 rgba(21,163,174,0)}18%{box-shadow:0 0 0 4px rgba(21,163,174,.18);border-color:var(--teal-live)}100%{box-shadow:var(--shadow)}}
+  .field .flabel{font-size:11px;letter-spacing:.03em;text-transform:uppercase;color:var(--ink-3);grid-column:1/-1;margin-bottom:2px}
+  .field .fval{font-size:14.5px;font-weight:500;color:var(--ink);align-self:center}
+  .field .fval .sub{display:block;font-size:12.5px;font-weight:400;color:var(--ink-2);margin-top:1px}
+  .field .fval.empty{color:var(--ink-3);font-weight:400;font-style:italic}
+
+  .tag{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;font-size:10.5px;font-weight:600;letter-spacing:.02em;white-space:nowrap;align-self:center}
+  .tag svg{width:11px;height:11px}
+  .tag.ok{background:var(--ready-soft);color:var(--ready)}
+  .tag.declined{background:var(--attn-soft);color:var(--attn)}
+  .tag.wait{background:var(--surface-2);color:var(--ink-3)}
+
+
+  .reqmark{display:inline-block;margin-left:8px;font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--attn);vertical-align:middle}
+  .reqmark.opt{color:var(--ink-3)}
+  .ready-flag{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:4px 11px;border-radius:999px;font-size:12px;font-weight:600}
+  .ready-flag svg{width:13px;height:13px}
+  .ready-flag.ok{background:var(--ready-soft);color:var(--ready)}
+  .ready-flag.attn{background:var(--attn-soft);color:var(--attn)}
+  .ready-flag.neutral{background:var(--surface-2);color:var(--ink-3);border:1px solid var(--line)}
+  .tag.reqmiss{background:var(--attn-soft);color:var(--attn)}
+  .fixbtn{grid-column:1/-1;margin-top:9px;display:inline-flex;align-items:center;gap:6px;align-self:start;padding:6px 12px;border:1px solid var(--attn);color:var(--attn);background:#fff;border-radius:7px;font-size:12px;font-weight:600;width:max-content}
+  .fixbtn:hover{background:var(--attn-soft)}
+  .unverif{color:var(--attn);font-weight:600}
+
+  .controls{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:10px;align-items:center;background:var(--ink);color:#fff;padding:9px 10px 9px 18px;border-radius:999px;box-shadow:0 12px 40px rgba(16,36,46,.28);z-index:20}
+  .controls .msg{font-size:12.5px;color:#B9C7CC;letter-spacing:.01em;max-width:260px}
+  .controls .msg b{color:#fff;font-weight:600}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:9px 17px;border-radius:999px;font-size:13px;font-weight:600;letter-spacing:.01em;transition:transform .1s, background .2s}
+  .btn:active{transform:scale(.97)}
+  .btn.primary{background:var(--teal-live);color:#fff}
+  .btn.primary:hover{background:#12b3bf}
+  .btn.primary:disabled{background:#3a5560;color:#7e939a;cursor:default}
+  .btn.ghost{background:rgba(255,255,255,.08);color:#cdd9dd}
+  .btn.ghost:hover{background:rgba(255,255,255,.15)}
+  .btn svg{width:15px;height:15px}
+
+  @media (max-width:840px){.main{grid-template-columns:1fr}.roster{display:none}.rhead{flex-direction:column}.progress-card{width:100%}}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l2-6 4 12 2-6h6"/></svg></span>
+      <div><h1>Riverside Cardiology</h1><div class="sub">Front desk · Intake</div></div>
+    </div>
+    <div class="callchip" id="callchip">
+      <span class="dot"></span>
+      <svg class="ecg" viewBox="0 0 104 20" preserveAspectRatio="none" aria-hidden="true"><path d="M0 10 H18 l4 -7 4 14 4 -7 H52 l4 -7 4 14 4 -7 H104" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span id="callmsg">No active call</span>
+    </div>
+    <div class="date">Thursday · <span class="mono">1:41 PM</span></div>
+  </header>
+
+  <div class="main">
+    <aside class="roster">
+      <div class="roster-head">
+        <div class="eyebrow">Today</div>
+        <h2>Upcoming Appointments</h2>
+        <div class="count"><b>3 need attention</b> · 5 ready</div>
+      </div>
+      <div class="roster-list" id="rosterlist"></div>
+    </aside>
+
+    <section class="record-wrap">
+      <div class="record">
+        <div class="rhead">
+          <div class="patient">
+            <h2 id="pname">—</h2>
+            <div id="readyflag" class="ready-flag neutral"></div>
+            <div class="meta">
+              <span><span class="k">DOB</span><span class="mono" id="pdob">—</span></span>
+              <span><span class="k">Appt</span><span id="pappt">—</span></span>
+              <span><span class="k">Phone</span><span class="mono" id="pphone">—</span></span>
+            </div>
+          </div>
+          <div class="progress-card">
+            <div class="num"><span id="doneN">0</span><span class="of" id="totN">/0</span></div>
+            <div class="lbl">Required captured</div>
+            <div class="bar"><i id="progbar"></i></div>
+          </div>
+        </div>
+
+        <div class="phasestrip" id="phasestrip"></div>
+
+        <div class="banner amber" id="noticebanner">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+          <div class="body"><b id="noticelead">Notice</b> <span id="noticetext"></span></div>
+        </div>
+
+        <div id="groups"></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div class="controls">
+  <span class="msg" id="ctrlmsg">Ready to receive intake call</span>
+  <button class="btn primary" id="simbtn">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13 1 .35 1.94.66 2.87a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.93.31 1.87.53 2.87.66A2 2 0 0 1 22 16.92z"/></svg>
+    Simulate incoming call
+  </button>
+  <button class="btn ghost" id="resetbtn">Reset</button>
+</div>
+
+<script>
+const PHASES = ["Consent","Reason","Meds","Allergies","History","Insurance","Contact","Recap"];
+
+/* req:1 => REQUIRED (critical, blocks check-in). No req => optional. */
+const ROSTER = [
+  {id:"maria",  time:"1:40pm", name:"Maria Alvarez", rsn:"Palpitations", force:"live"},
+  {id:"ken",    time:"2:20pm", name:"Ken Boyd",      rsn:"Follow-up · insurance ID missing"},
+  {id:"priya",  time:"3:00pm", name:"Priya Raman",   rsn:"Chest pain · call didn’t connect"},
+  {id:"louis",  time:"1:10pm", name:"Louis Tran",    rsn:"Medication review"},
+  {id:"ada",    time:"1:30pm", name:"Ada Nwosu",     rsn:"Palpitations"},
+  {id:"sam",    time:"2:00pm", name:"Sam Feldman",   rsn:"Follow-up"},
+  {id:"rosa",   time:"2:40pm", name:"Rosa Diaz",     rsn:"New patient"},
+  {id:"omar",   time:"3:20pm", name:"Omar Haddad",   rsn:"Follow-up", force:"wait"},
+  {id:"grace",  time:"1:50pm", name:"Grace Kim",     rsn:"Follow-up · payer missing"},
+];
+
+const RECORDS = {
+  maria:{
+    meta:{dob:"Mar 4, 1990", appt:"Thu 2:00 PM · Dr. Okafor", phone:"(917) 555-0143"},
+    chip:{msg:"Incoming call ready"}, notice:null,
+    fields:[
+      {grp:"Identity", label:"Full name", val:"Maria Alvarez", state:"ok", req:1, phase:0},
+      {grp:"Identity", label:"Date of birth", val:"Mar 4, 1990", mono:1, state:"ok", req:1, phase:0},
+      {grp:"Identity", label:"Preferred language", val:"English", state:"ok", phase:0},
+      {grp:"Consent", label:"Recording & sharing consent", val:"Given", sub:"1:41 PM · verbal", state:"ok", phase:0},
+      {grp:"Reason for visit", label:"In the patient’s words", val:"“A fluttering in my chest, like it skips a beat — worse when I’m stressed.”", sub:"Mapped: palpitations", state:"ok", phase:1},
+      {grp:"Medications", label:"Current medications", val:"Metoprolol", sub:"50 mg · twice daily", state:"readback", phase:2},
+      {grp:"Medications", label:"", val:"Vitamin D", sub:"daily", state:"readback", phase:2},
+      {grp:"Allergies", label:"Drug allergies", val:"Penicillin", sub:"rash", state:"readback", phase:3, allergy:1},
+      {grp:"History", label:"Ongoing conditions", val:"Hypertension", sub:"self-reported", state:"ok", phase:4},
+      {grp:"History", label:"Social history", val:"Declined", state:"declined", phase:4},
+      {grp:"Insurance", label:"Payer", val:"Aetna", sub:"self-reported · unverified", unverif:1, state:"ok", req:1, phase:5},
+      {grp:"Insurance", label:"Member ID", val:"W1234-56789", mono:1, unverif:1, state:"ok", phase:5},
+      {grp:"Insurance", label:"Group number", val:"Couldn’t capture on the call", state:"confirm", phase:5},
+      {grp:"Emergency contact", label:"Contact", val:"Dana Alvarez", sub:"Sister · (917) 555-0198", state:"ok", req:1, phase:6},
+    ]
+  },
+  ken:{
+    meta:{dob:"Jul 22, 1968", appt:"Thu 2:20 PM · Dr. Okafor", phone:"(917) 555-0176"},
+    chip:{msg:"Call complete · 2:06 PM"},
+    notice:{lead:"A field needs the desk:", text:"member ID couldn’t be captured on the call — grab the insurance card at check-in."},
+    fields:[
+      {grp:"Identity", label:"Full name", val:"Ken Boyd", state:"ok", req:1},
+      {grp:"Identity", label:"Date of birth", val:"Jul 22, 1968", mono:1, state:"ok", req:1},
+      {grp:"Identity", label:"Preferred language", val:"English", state:"ok"},
+      {grp:"Consent", label:"Recording & sharing consent", val:"Given", sub:"2:02 PM · verbal", state:"ok"},
+      {grp:"Reason for visit", label:"In the patient’s words", val:"“Just my regular blood-pressure check-in.”", sub:"Mapped: hypertension follow-up", state:"ok"},
+      {grp:"Medications", label:"Current medications", val:"Lisinopril", sub:"20 mg · daily", state:"readback"},
+      {grp:"Medications", label:"", val:"Atorvastatin", sub:"40 mg · nightly", state:"readback"},
+      {grp:"Allergies", label:"Drug allergies", val:"No known drug allergies", state:"ok"},
+      {grp:"History", label:"Ongoing conditions", val:"Hypertension, Type 2 diabetes", state:"ok"},
+      {grp:"Insurance", label:"Payer", val:"UnitedHealthcare", sub:"self-reported · unverified", unverif:1, state:"ok", req:1},
+      {grp:"Insurance", label:"Member ID", val:"Couldn’t capture on the call", state:"confirm"},
+      {grp:"Emergency contact", label:"Contact", val:"Marie Boyd", sub:"Spouse · (917) 555-0177", state:"ok", req:1},
+    ]
+  },
+  priya:{
+    meta:{dob:"Nov 2, 1980", appt:"Thu 3:00 PM · Dr. Lee", phone:"(917) 555-0121"},
+    chip:{msg:"Couldn’t reach · 2 attempts"},
+    notice:{lead:"Call didn’t connect.", text:"Two attempts went to voicemail. Required fields are unmet — retry or complete at the desk. Booking reason: chest pain — flag for the clinician."},
+    fields:[
+      {grp:"Identity", label:"Full name", val:"Priya Raman", sub:"from booking", state:"ok", req:1},
+      {grp:"Identity", label:"Date of birth", val:"Nov 2, 1980", mono:1, sub:"from booking", state:"ok", req:1},
+      {grp:"Consent", label:"Recording & sharing consent", val:"Not captured", state:"wait"},
+      {grp:"Reason for visit", label:"In the patient’s words", val:"Not captured", sub:"booking note: chest pain", state:"wait"},
+      {grp:"Medications", label:"Current medications", val:"Not captured", state:"wait"},
+      {grp:"Allergies", label:"Drug allergies", val:"Not captured", state:"wait"},
+      {grp:"History", label:"Ongoing conditions", val:"Not captured", state:"wait"},
+      {grp:"Insurance", label:"Payer", val:"Not captured", state:"wait", req:1},
+      {grp:"Insurance", label:"Member ID", val:"Not captured", state:"wait"},
+      {grp:"Emergency contact", label:"Contact", val:"Not captured", state:"wait", req:1},
+    ]
+  },
+  louis:{
+    meta:{dob:"Feb 14, 1955", appt:"Thu 1:10 PM · Dr. Okafor", phone:"(917) 555-0187"},
+    chip:{msg:"Call complete · 12:48 PM"}, notice:null,
+    fields:[
+      {grp:"Identity", label:"Full name", val:"Louis Tran", state:"ok", req:1},
+      {grp:"Identity", label:"Date of birth", val:"Feb 14, 1955", mono:1, state:"ok", req:1},
+      {grp:"Identity", label:"Preferred language", val:"English", state:"ok"},
+      {grp:"Consent", label:"Recording & sharing consent", val:"Given", sub:"12:44 PM · verbal", state:"ok"},
+      {grp:"Reason for visit", label:"In the patient’s words", val:"“Yearly review of all my medications.”", sub:"Mapped: medication review", state:"ok"},
+      {grp:"Medications", label:"Current medications", val:"Warfarin", sub:"5 mg · daily", state:"readback"},
+      {grp:"Medications", label:"", val:"Metformin", sub:"1000 mg · twice daily", state:"readback"},
+      {grp:"Medications", label:"", val:"Aspirin", sub:"81 mg · daily", state:"readback"},
+      {grp:"Allergies", label:"Drug allergies", val:"Sulfa drugs", sub:"hives", state:"readback", allergy:1},
+      {grp:"History", label:"Ongoing conditions", val:"Atrial fibrillation, Type 2 diabetes", state:"ok"},
+      {grp:"Insurance", label:"Payer", val:"Medicare", sub:"self-reported · unverified", unverif:1, state:"ok", req:1},
+      {grp:"Insurance", label:"Member ID", val:"1EG4-TE5-MK72", mono:1, unverif:1, state:"ok"},
+      {grp:"Emergency contact", label:"Contact", val:"Tom Tran", sub:"Son · (917) 555-0188", state:"ok", req:1},
+    ]
+  },
+  ada:{
+    meta:{dob:"Sep 9, 1996", appt:"Thu 1:30 PM · Dr. Lee", phone:"(917) 555-0155"},
+    chip:{msg:"Call complete · 1:12 PM"}, notice:null,
+    fields:[
+      {grp:"Identity", label:"Full name", val:"Ada Nwosu", state:"ok", req:1},
+      {grp:"Identity", label:"Date of birth", val:"Sep 9, 1996", mono:1, state:"ok", req:1},
+      {grp:"Identity", label:"Preferred language", val:"English", state:"ok"},
+      {grp:"Consent", label:"Recording & sharing consent", val:"Given", sub:"1:09 PM · verbal", state:"ok"},
+      {grp:"Reason for visit", label:"In the patient’s words", val:"“My heart races a bit after coffee, wanted it checked.”", sub:"Mapped: palpitations", state:"ok"},
+      {grp:"Medications", label:"Current medications", val:"None reported", state:"ok"},
+      {grp:"Allergies", label:"Drug allergies", val:"No known drug allergies", state:"ok"},
+      {grp:"History", label:"Ongoing conditions", val:"None reported", state:"ok"},
+      {grp:"History", label:"Social history", val:"Declined", state:"declined"},
+      {grp:"Insurance", label:"Payer", val:"Cigna", sub:"self-reported · unverified", unverif:1, state:"ok", req:1},
+      {grp:"Insurance", label:"Member ID", val:"U8842-11907", mono:1, unverif:1, state:"ok"},
+      {grp:"Emergency contact", label:"Contact", val:"Chidi Nwosu", sub:"Brother · (917) 555-0156", state:"ok", req:1},
+    ]
+  },
+  sam:{
+    meta:{dob:"Mar 30, 1972", appt:"Thu 2:00 PM · Dr. Okafor", phone:"(917) 555-0164"},
+    chip:{msg:"Call complete · 1:20 PM"}, notice:null,
+    fields:[
+      {grp:"Identity", label:"Full name", val:"Sam Feldman", state:"ok", req:1},
+      {grp:"Identity", label:"Date of birth", val:"Mar 30, 1972", mono:1, state:"ok", req:1},
+      {grp:"Identity", label:"Preferred language", val:"English", state:"ok"},
+      {grp:"Consent", label:"Recording & sharing consent", val:"Given", sub:"1:16 PM · verbal", state:"ok"},
+      {grp:"Reason for visit", label:"In the patient’s words", val:"“Following up after my stress test last month.”", sub:"Mapped: cardiology follow-up", state:"ok"},
+      {grp:"Medications", label:"Current medications", val:"Metoprolol", sub:"25 mg · twice daily", state:"readback"},
+      {grp:"Allergies", label:"Drug allergies", val:"No known drug allergies", state:"ok"},
+      {grp:"History", label:"Ongoing conditions", val:"Coronary artery disease", state:"ok"},
+      {grp:"Insurance", label:"Payer", val:"Aetna", sub:"self-reported · unverified", unverif:1, state:"ok", req:1},
+      {grp:"Insurance", label:"Member ID", val:"W5521-88320", mono:1, unverif:1, state:"ok"},
+      {grp:"Emergency contact", label:"Contact", val:"Rae Feldman", sub:"Spouse · (917) 555-0165", state:"ok", req:1},
+    ]
+  },
+  rosa:{
+    meta:{dob:"Jun 18, 1989", appt:"Thu 2:40 PM · Dr. Lee", phone:"(917) 555-0133"},
+    chip:{msg:"Call complete · 1:33 PM"}, notice:null,
+    fields:[
+      {grp:"Identity", label:"Full name", val:"Rosa Diaz", state:"ok", req:1},
+      {grp:"Identity", label:"Date of birth", val:"Jun 18, 1989", mono:1, state:"ok", req:1},
+      {grp:"Identity", label:"Preferred language", val:"Spanish", sub:"call conducted in Spanish", state:"ok"},
+      {grp:"Consent", label:"Recording & sharing consent", val:"Given", sub:"1:29 PM · verbal", state:"ok"},
+      {grp:"Reason for visit", label:"In the patient’s words", val:"“Palpitaciones y algo de mareo.”", sub:"Palpitations and dizziness · new patient", state:"ok"},
+      {grp:"Medications", label:"Current medications", val:"None reported", state:"ok"},
+      {grp:"Allergies", label:"Drug allergies", val:"Penicillin", sub:"swelling", state:"readback", allergy:1},
+      {grp:"History", label:"Ongoing conditions", val:"None reported", state:"ok"},
+      {grp:"History", label:"Social history", val:"Non-smoker · no alcohol", state:"ok"},
+      {grp:"Insurance", label:"Payer", val:"Fidelis Care", sub:"self-reported · unverified", unverif:1, state:"ok", req:1},
+      {grp:"Insurance", label:"Member ID", val:"F3390-27714", mono:1, unverif:1, state:"ok"},
+      {grp:"Emergency contact", label:"Contact", val:"Miguel Diaz", sub:"Brother · (917) 555-0134", state:"ok", req:1},
+    ]
+  },
+  grace:{
+    meta:{dob:"May 17, 1983", appt:"Thu 1:50 PM · Dr. Lee", phone:"(917) 555-0142"},
+    chip:{msg:"Call complete · 1:44 PM"},
+    notice:{lead:"A field needs the desk:", text:"insurance payer couldn’t be captured on the call — grab the insurance card at check-in."},
+    fields:[
+      {grp:"Identity", label:"Full name", val:"Grace Kim", state:"ok", req:1},
+      {grp:"Identity", label:"Date of birth", val:"May 17, 1983", mono:1, state:"ok", req:1},
+      {grp:"Identity", label:"Preferred language", val:"English", state:"ok"},
+      {grp:"Consent", label:"Recording & sharing consent", val:"Given", sub:"1:41 PM · verbal", state:"ok"},
+      {grp:"Reason for visit", label:"In the patient’s words", val:"“Routine follow-up on my blood pressure medication.”", sub:"Mapped: hypertension follow-up", state:"ok"},
+      {grp:"Medications", label:"Current medications", val:"Amlodipine", sub:"5 mg · daily", state:"readback"},
+      {grp:"Allergies", label:"Drug allergies", val:"Declined", state:"declined"},
+      {grp:"History", label:"Ongoing conditions", val:"Hypertension", state:"ok"},
+      {grp:"Insurance", label:"Payer", val:"Couldn’t capture on the call", state:"confirm", req:1},
+      {grp:"Insurance", label:"Member ID", val:"9K221-40033", mono:1, unverif:1, state:"ok"},
+      {grp:"Emergency contact", label:"Contact", val:"Henry Kim", sub:"Spouse · (917) 555-0143", state:"ok", req:1},
+    ]
+  },
+  omar:{
+    meta:{dob:"Dec 1, 1960", appt:"Thu 3:20 PM · Dr. Okafor", phone:"(917) 555-0190"},
+    chip:{msg:"Not started"},
+    notice:{lead:"Intake not started.", text:"Call is scheduled for 2:50 PM, ahead of the 3:20 appointment. Required fields will be captured then."},
+    fields:[
+      {grp:"Identity", label:"Full name", val:"Omar Haddad", sub:"from booking", state:"ok", req:1},
+      {grp:"Identity", label:"Date of birth", val:"Dec 1, 1960", mono:1, sub:"from booking", state:"ok", req:1},
+      {grp:"Consent", label:"Recording & sharing consent", val:"Not started", state:"wait"},
+      {grp:"Reason for visit", label:"In the patient’s words", val:"Not started", state:"wait"},
+      {grp:"Medications", label:"Current medications", val:"Not started", state:"wait"},
+      {grp:"Allergies", label:"Drug allergies", val:"Not started", state:"wait"},
+      {grp:"History", label:"Ongoing conditions", val:"Not started", state:"wait"},
+      {grp:"Insurance", label:"Payer", val:"Not started", state:"wait", req:1},
+      {grp:"Insurance", label:"Member ID", val:"Not started", state:"wait"},
+      {grp:"Emergency contact", label:"Contact", val:"Not started", state:"wait", req:1},
+    ]
+  },
+};
+
+const IC = {
+  check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  pen:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  ready:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  warn:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>',
+};
+const $ = s => document.querySelector(s);
+const groupsEl = $("#groups");
+let fieldEls=[], current=null, mariaDone=false, running=false, timers=[];
+
+const cap = f => f.state==="ok"||f.state==="readback";
+const reqTotal = rec => rec.fields.filter(f=>f.req).length;
+const reqDone  = rec => rec.fields.filter(f=>f.req&&cap(f)).length;
+const reqMissing = rec => reqTotal(rec)-reqDone(rec);
+
+function tagFor(f){
+  if(f.state==="ok"||f.state==="readback") return `<span class="tag ok">${IC.check} Captured</span>`;
+  if(f.state==="declined") return `<span class="tag declined">Declined</span>`;
+  return `<span class="tag declined">Couldn’t capture</span>`;
+}
+function reqMark(f){
+  if(f.label==="") return "";
+  return f.req?`<span class="reqmark">Required</span>`:`<span class="reqmark opt">Optional</span>`;
+}
+
+function buildDOM(rec){
+  groupsEl.innerHTML=""; fieldEls=[];
+  const groups=[...new Set(rec.fields.map(f=>f.grp))];
+  groups.forEach(g=>{
+    const wrap=document.createElement("div"); wrap.className="group";
+    wrap.innerHTML=`<h3>${g}<span class="ln"></span></h3>`;
+    rec.fields.filter(f=>f.grp===g).forEach(f=>{
+      const el=document.createElement("div"); el.className="field";
+      el.innerHTML=(f.label?`<div class="flabel">${f.label}${reqMark(f)}</div>`:"")+
+        `<div class="fval" data-slot>—</div><div data-tag></div>`+
+        (f.state==="confirm"?`<button class="fixbtn" data-fix>${IC.pen} Add at desk</button>`:"");
+      wrap.appendChild(el);
+      fieldEls.push({el,f,slot:el.querySelector("[data-slot]"),tag:el.querySelector("[data-tag]")});
+    });
+    groupsEl.appendChild(wrap);
+  });
+}
+function paintField(fe){
+  const {el,f,slot,tag}=fe;
+  slot.classList.remove("empty");
+  const subHtml=f.sub?`<span class="sub">${f.unverif?`<span class="unverif">${f.sub}</span>`:f.sub}</span>`:"";
+  slot.innerHTML=f.val+subHtml;
+  tag.innerHTML=tagFor(f);
+  el.classList.add("filled");
+  el.classList.toggle("pending", f.state==="wait");
+}
+function emptyField(fe){
+  fe.el.classList.remove("filled"); fe.el.classList.add("pending");
+  fe.slot.classList.add("empty"); fe.slot.textContent="Waiting for call…";
+  fe.tag.innerHTML=`<span class="tag wait">Not started</span>`;
+}
+function setProgress(done,total){ $("#doneN").textContent=done; $("#totN").textContent="/"+total; $("#progbar").style.width=(total?done/total*100:0)+"%"; }
+
+function setReadyFlag(rec, mode){
+  const el=$("#readyflag");
+  if(mode==="waiting"){ el.className="ready-flag neutral"; el.textContent="Waiting for call"; return; }
+  const miss=reqMissing(rec);
+  if(miss===0){ el.className="ready-flag ok"; el.innerHTML=`${IC.ready} Ready to check in — all required captured`; }
+  else{ el.className="ready-flag attn"; el.innerHTML=`${IC.warn} ${miss} required field${miss>1?"s":""} need${miss>1?"":"s"} the desk`; }
+}
+function setBanners(rec){
+  const nb=$("#noticebanner");
+  if(rec.notice){ $("#noticelead").textContent=rec.notice.lead; $("#noticetext").textContent=rec.notice.text; nb.classList.add("show"); } else nb.classList.remove("show");
+}
+
+function statusOf(rec, id){
+  const forced=ROSTER.find(r=>r.id===id).force;
+  if(forced) return forced;
+  return reqMissing(rec)>0 ? "attn" : "ready";
+}
+
+function selectPatient(id){
+  clearTimers(); running=false; $("#simbtn").disabled=false;
+  document.querySelectorAll(".prow").forEach(r=>r.classList.toggle("active", r.dataset.id===id));
+  const rec=RECORDS[id]; current=id;
+  $("#pname").textContent=ROSTER.find(r=>r.id===id).name;
+  $("#pdob").textContent=rec.meta.dob; $("#pappt").textContent=rec.meta.appt; $("#pphone").textContent=rec.meta.phone;
+  $("#phasestrip").classList.remove("show"); $("#phasestrip").innerHTML="";
+  buildDOM(rec);
+  const liveEmpty=(id==="maria"&&!mariaDone);
+  if(liveEmpty){
+    fieldEls.forEach(emptyField);
+    setProgress(0, reqTotal(rec)); setReadyFlag(rec,"waiting");
+    $("#noticebanner").classList.remove("show");
+    $("#callchip").classList.remove("on"); $("#callmsg").textContent="Incoming call ready";
+    $("#ctrlmsg").innerHTML="<b>Maria Alvarez</b> · ready to receive call";
+  } else {
+    fieldEls.forEach(paintField);
+    setProgress(reqDone(rec), reqTotal(rec)); setReadyFlag(rec); setBanners(rec);
+    $("#callchip").classList.remove("on"); $("#callmsg").textContent=rec.chip.msg;
+    const miss=reqMissing(rec);
+    let msg=`<b>${ROSTER.find(r=>r.id===id).name}</b> · ${reqDone(rec)}/${reqTotal(rec)} required`;
+    if(miss) msg+=` · ${miss} to confirm`;
+    $("#ctrlmsg").innerHTML=msg;
+  }
+}
+
+function pillFor(s){const m={ready:["ready","Ready"],live:["live","On call now"]};if(!m[s])return "";const[c,t]=m[s];return `<span class="pill ${c}"><span class="d"></span>${t}</span>`;}
+function attnPill(rec){
+  const unreachable=/couldn.?t reach/i.test((rec&&rec.chip&&rec.chip.msg)||"");
+  const label=unreachable?"Couldn’t reach":"Missing info";
+  return `<span class="pill ${unreachable?"alert":"attn"}"><span class="d"></span>${label}</span>`;
+}
+function buildRoster(){
+  const list=$("#rosterlist");
+  const withStatus=ROSTER.map(r=>({...r,status:statusOf(RECORDS[r.id],r.id)}));
+  const attn=withStatus.filter(r=>r.status==="attn"||r.status==="live");
+  const rest=withStatus.filter(r=>r.status==="ready"||r.status==="wait");
+  const row=r=>`<button class="prow" data-id="${r.id}">
+      <span class="time mono">${r.time}</span>
+      <span class="who"><span class="nm">${r.name}</span><br><span class="rsn">${r.rsn}</span></span>
+      <span class="stat">${r.status==="attn"?attnPill(RECORDS[r.id]):pillFor(r.status)}</span></button>`;
+  list.innerHTML=`<div class="sectlabel">Needs attention</div>`+attn.map(row).join("")+
+                 `<div class="sectlabel">Ready for check-in</div>`+rest.map(row).join("");
+  list.querySelectorAll(".prow").forEach(b=>b.addEventListener("click",()=>selectPatient(b.dataset.id)));
+  const nAttn=attn.filter(r=>r.status==="attn").length;
+  const nReady=rest.filter(r=>r.status==="ready").length;
+  $(".roster-head .count").innerHTML=`<b>${nAttn} need attention</b> · ${nReady} ready`;
+}
+
+function clearTimers(){timers.forEach(clearTimeout);timers=[];}
+const wait=ms=>new Promise(r=>{const t=setTimeout(r,ms);timers.push(t);});
+function setPhaseStrip(a){
+  const s=$("#phasestrip"); s.classList.add("show");
+  s.innerHTML=PHASES.map((p,i)=>{const c=i<a?"done":(i===a?"now":"");const inner=i<a?IC.check:(i+1);
+    return `<span class="ph ${c}"><span class="n">${inner}</span>${p}</span>`+(i<PHASES.length-1?`<span class="sep"></span>`:"");}).join("");
+}
+async function runSim(){
+  if(running) return;
+  mariaDone=false; selectPatient("maria"); running=true; $("#simbtn").disabled=true;
+  const rec=RECORDS.maria;
+  $("#callchip").classList.add("on"); $("#callmsg").textContent="Call in progress";
+  $("#ctrlmsg").innerHTML="<b>Maria Alvarez</b> · call connected";
+  let done=0; const total=reqTotal(rec);
+  for(let p=0;p<PHASES.length;p++){
+    setPhaseStrip(p);
+    if(p===PHASES.length-1){ await wait(700); break; }
+    const inPhase=fieldEls.filter(x=>x.f.phase===p);
+    await wait(p===0?500:420);
+    for(const fe of inPhase){
+      paintField(fe);
+      fe.el.classList.add("just"); setTimeout(()=>fe.el.classList.remove("just"),750);
+      if(fe.f.req&&cap(fe.f)){ done++; setProgress(done,total); }
+      await wait(560);
+    }
+  }
+  setPhaseStrip(PHASES.length);
+  mariaDone=true; running=false; $("#simbtn").disabled=false;
+  setReadyFlag(rec); setBanners(rec);
+  $("#callchip").classList.remove("on"); $("#callmsg").textContent="Call complete";
+  $("#ctrlmsg").innerHTML="Chart ready · <b>confirmation sent</b>";
+}
+function reset(){ clearTimers(); running=false; mariaDone=false; selectPatient("maria"); }
+
+buildRoster();
+selectPatient("maria");
+$("#simbtn").addEventListener("click",runSim);
+$("#resetbtn").addEventListener("click",reset);
+</script>
+</body>
+</html>
