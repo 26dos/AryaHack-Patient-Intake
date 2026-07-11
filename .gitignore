@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+*.log
+scratch_test_output.mp3
+.DS_Store
+.claude/
+server/supabase/.temp/
+

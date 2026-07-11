@@ -1,0 +1,21 @@
+{
+  "name": "arya-intake-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "buy-number": "node scripts/buy_number.js",
+    "test-call": "node scripts/place_test_call.js",
+    "db:apply": "node scripts/apply_schema.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "@supabase/supabase-js": "^2.45.4",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "twilio": "^5.3.4"
+  }
+}
