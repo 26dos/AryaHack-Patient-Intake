@@ -27,4 +27,9 @@ export const config = {
     serviceRoleKey: required('SUPABASE_SERVICE_ROLE_KEY'),
   },
   testPatientPhoneNumber: process.env.TEST_PATIENT_PHONE_NUMBER || '',
+  resend: {
+    apiKey: process.env.RESEND_API_KEY || '',
+    from: process.env.CONFIRMATION_EMAIL_FROM || 'onboarding@resend.com',
+    to: process.env.CONFIRMATION_EMAIL_TO || '',
+  },
 };

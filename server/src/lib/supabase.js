@@ -13,6 +13,8 @@ const RECORD_PATCH_KEYS = [
   'appointment_confirmed',
   'sms_sent',
   'sms_sent_at',
+  'email_sent',
+  'email_sent_at',
 ];
 
 /**

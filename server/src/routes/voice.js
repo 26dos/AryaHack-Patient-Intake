@@ -5,6 +5,7 @@ import { runTurn } from '../lib/conversation.js';
 import { upsertRecord, upsertField, logEvent, getRecord } from '../lib/supabase.js';
 import { synthesizeAndStore } from '../lib/tts.js';
 import { sendSms } from '../twilioClient.js';
+import { sendConfirmationEmail } from '../lib/email.js';
 import { FIELD_GROUPS, EMERGENCY_KEYWORDS_MESSAGE, ALL_FIELD_KEYS } from '../lib/intakeSchema.js';
 
 const router = express.Router();
@@ -189,21 +190,48 @@ router.post('/voice/gather-fallback-2', safeVoiceHandler(async (req, res) => {
   res.type('text/xml').send(twiml.toString());
 }));
 
-function buildSmsSummary(record) {
+function buildIntakeSummaryLines(record) {
   const fields = record.fields || {};
-  const lines = ['Thanks for completing your pre-visit intake with Arya Health! Summary:'];
+  const lines = [];
   for (const key of ALL_FIELD_KEYS) {
     const f = fields[key];
     if (!f) continue;
     const label = key.replace(/_/g, ' ');
     if (f.state === 'captured' && f.value) {
-      lines.push(`- ${label}: ${f.value}`);
+      lines.push(`${label}: ${f.value}`);
     } else if (f.state === 'patient_declined') {
-      lines.push(`- ${label}: declined to share`);
+      lines.push(`${label}: declined to share`);
     }
   }
-  lines.push('If anything looks wrong, call us back before your visit.');
-  return lines.join('\n');
+  return lines;
+}
+
+function buildSmsSummary(record) {
+  const lines = buildIntakeSummaryLines(record).map((l) => `- ${l}`);
+  return [
+    'Thanks for completing your pre-visit intake with Arya Health! Summary:',
+    ...lines,
+    'If anything looks wrong, call us back before your visit.',
+  ].join('\n');
+}
+
+function buildEmailSummary(record) {
+  const lines = buildIntakeSummaryLines(record);
+  const text = [
+    'Thanks for completing your pre-visit intake with Arya Health!',
+    '',
+    'Summary of what we captured:',
+    ...lines.map((l) => `- ${l}`),
+    '',
+    'If anything looks wrong, call us back before your visit.',
+  ].join('\n');
+  const html = `
+    <p>Thanks for completing your pre-visit intake with Arya Health!</p>
+    <p><strong>Summary of what we captured:</strong></p>
+    <ul>${lines.map((l) => `<li>${l}</li>`).join('')}</ul>
+    <p>If anything looks wrong, call us back before your visit.</p>
+  `;
+  return { text, html };
 }
 
 router.post('/voice/status', async (req, res) => {
@@ -217,6 +245,11 @@ router.post('/voice/status', async (req, res) => {
       if (record && !['completed', 'voicemail', 'emergency_escalated'].includes(record.call_status)) {
         await upsertRecord(callSid, { call_status: 'completed' });
       }
+      // SMS is best-effort: this Twilio account's numbers are blocked from delivering SMS by
+      // carrier-level A2P 10DLC / toll-free compliance (errors 30034/30032), which requires
+      // business registration that takes hours-to-days — not something an API call can fix. We
+      // still attempt it (free if it ever clears), but email (below) is the PRD-sanctioned
+      // fallback channel ("SMS or email") and the one actually relied on for the demo.
       if (record && !record.sms_sent && record.phone_number) {
         try {
           const summary = buildSmsSummary(record);
@@ -225,6 +258,21 @@ router.post('/voice/status', async (req, res) => {
         } catch (err) {
           console.error('SMS send failed', err);
           await logEvent(callSid, 'sms_error', { error: String(err) });
+        }
+      }
+
+      if (record && !record.email_sent) {
+        try {
+          const { text, html } = buildEmailSummary(record);
+          await sendConfirmationEmail({
+            subject: `Your pre-visit intake is complete — Arya Health (${record.phone_number || callSid})`,
+            text,
+            html,
+          });
+          await upsertRecord(callSid, { email_sent: true, email_sent_at: new Date().toISOString() });
+        } catch (err) {
+          console.error('Email send failed', err);
+          await logEvent(callSid, 'email_error', { error: String(err) });
         }
       }
     } else if (['busy', 'failed', 'no-answer', 'canceled'].includes(callStatus)) {

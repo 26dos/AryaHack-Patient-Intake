@@ -19,9 +19,17 @@ create table if not exists intake_records (
   fields jsonb not null default '{}'::jsonb,
   sms_sent boolean not null default false,
   sms_sent_at timestamptz,
+  email_sent boolean not null default false,
+  email_sent_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Added after initial rollout: SMS delivery is blocked by Twilio A2P 10DLC / toll-free carrier
+-- compliance on this account (errors 30034/30032), so email became the primary confirmation
+-- channel (PRD Section 2 allows "SMS or email"). Guarded so this script stays re-runnable.
+alter table intake_records add column if not exists email_sent boolean not null default false;
+alter table intake_records add column if not exists email_sent_at timestamptz;
 
 create table if not exists call_events (
   id uuid primary key default gen_random_uuid(),
