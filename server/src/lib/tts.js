@@ -10,6 +10,9 @@ import { storeAudio } from './audioStore.js';
 
 const ELEVENLABS_TTS_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
 const DEFAULT_MODEL_ID = 'eleven_turbo_v2_5';
+// Keeps a stalled ElevenLabs call from hanging a conversation turn — falls
+// back to <Say> instead of blocking the caller mid-demo.
+const REQUEST_TIMEOUT_MS = 6000;
 
 // Tuned for a warm, calm clinical-intake phone voice per PRD Section 6
 // ("warm, human framing, not robocall energy") — not maximally expressive,
@@ -61,9 +64,11 @@ export async function synthesizeSpeech(text) {
         model_id: DEFAULT_MODEL_ID,
         voice_settings: DEFAULT_VOICE_SETTINGS,
       }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (err) {
-    console.warn(`[tts] Network error calling ElevenLabs: ${err.message}. Falling back to <Say>.`);
+    const reason = err.name === 'TimeoutError' ? `timed out after ${REQUEST_TIMEOUT_MS}ms` : err.message;
+    console.warn(`[tts] Network error calling ElevenLabs: ${reason}. Falling back to <Say>.`);
     return null;
   }
 

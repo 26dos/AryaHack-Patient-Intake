@@ -78,6 +78,13 @@ export const MODEL_CANDIDATES = [
 
 let cachedModelName = null;
 
+// Twilio's TwiML webhook has a hard ~15s response deadline — without this, a stalled Gemini
+// call (no timeout by default) hangs the whole turn past that deadline and Twilio kills the
+// call with its own generic "An application error has occurred" message instead of our
+// graceful fallback line. Bounding each candidate's call lets safeVoiceHandler's catch block
+// produce that fallback instead.
+const GEMINI_REQUEST_TIMEOUT_MS = 8000;
+
 // ---------------------------------------------------------------------------------------------
 // In-memory per-call session state (Map keyed by callSid). No persistence — that's Supabase's job
 // in another module.
@@ -309,11 +316,14 @@ async function sendInterviewTurn(session, transcript, systemInstruction) {
   let lastErr;
   for (const modelName of candidates) {
     try {
-      const model = genAI.getGenerativeModel({
-        model: modelName,
-        systemInstruction,
-        tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
-      });
+      const model = genAI.getGenerativeModel(
+        {
+          model: modelName,
+          systemInstruction,
+          tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
+        },
+        { timeout: GEMINI_REQUEST_TIMEOUT_MS }
+      );
       const chat = model.startChat({ history: session.history || [] });
       const result = await chat.sendMessage(transcript);
 
@@ -355,12 +365,12 @@ function buildGreeting(capturedFieldsSnapshot) {
   const apptDateTime = capturedFieldsSnapshot?.appointment_datetime;
 
   if (name && apptDateTime) {
-    return `Hi, this is your doctor's office calling ahead of your upcoming visit on ${apptDateTime}. Am I speaking with ${name}?`;
+    return `Hi! Hope you're having a good day. This is your doctor's office calling ahead of your upcoming visit on ${apptDateTime} — am I speaking with ${name}?`;
   }
   if (name) {
-    return `Hi, this is your doctor's office calling ahead of your upcoming appointment. Am I speaking with ${name}, and can you confirm the date and time of your visit?`;
+    return `Hi! Hope you're doing well today. This is your doctor's office calling ahead of your upcoming appointment. Am I speaking with ${name}, and can you confirm the date and time of your visit?`;
   }
-  return "Hi, this is your doctor's office calling ahead of your upcoming appointment. Could I get your name, and can you confirm the date and time of your visit?";
+  return "Hi there! Hope you're having a good day. This is your doctor's office calling ahead of your upcoming appointment. Could I get your name, and can you confirm the date and time of your visit?";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -417,7 +427,9 @@ export async function runTurn({ callSid, transcript, capturedFieldsSnapshot = {}
     // Affirm, unclear, or a second decline: proceed rather than dead-ending (no infinite retry).
     session.stage = 'consent';
     return {
-      replyText: CONSENT_SCRIPT,
+      // A short warm bridge, then the verbatim consent script (PRD Section 6 — the disclosure
+      // itself must play verbatim, so the warmth goes before it, not woven into it).
+      replyText: `Great, thank you! ${CONSENT_SCRIPT}`,
       toolCalls: [],
       consentGiven: false,
       stage: 'consent',
