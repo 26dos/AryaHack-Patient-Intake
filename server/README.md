@@ -18,6 +18,23 @@ Twilio + Gemini + ElevenLabs + Supabase pre-appointment intake voice agent, per 
 - Watch the live dashboard at `$PUBLIC_BASE_URL/` (or `http://localhost:3000/`)
 - Confirmation SMS should arrive within 60s of hangup
 
+## Demo patients
+
+The server has a generated demo patient roster with name, DOB, insurance ID, and
+phone placeholders. `TEST_PATIENT_PHONE_NUMBER` is the default phone override for
+Maya Rivera. Additional real test numbers can be supplied with:
+
+```bash
+DEMO_PATIENT_MAYA_PHONE=...
+DEMO_PATIENT_DANIEL_PHONE=...
+DEMO_PATIENT_ELENA_PHONE=...
+DEMO_PATIENT_ID=pat-maya-rivera
+```
+
+Calls seed the selected patient before dialing, verify DOB by keypad, then move
+to consent and intake. Insurance ID remains self-reported intake data for the
+demo, not a verifier.
+
 ## Module map
 
 - `src/index.js` — Express app entry, mounts all routers

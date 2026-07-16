@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { listRecentRecords, getRecord, computeCompleteness } from '../lib/supabase.js';
 import { FIELD_GROUPS, REQUIRED_P0_FIELD_KEYS, ALL_FIELD_KEYS } from '../lib/intakeSchema.js';
 import { placeIntakeCall } from '../twilioClient.js';
-import { config } from '../config.js';
+import { getDefaultDemoPatient, getDemoPatient, listDemoPatients, publicDemoPatient } from '../lib/demoPatients.js';
 
 const router = Router();
 
@@ -13,16 +13,26 @@ const router = Router();
 // so locking it to the one configured number keeps this safe to leave exposed during a demo.
 router.post('/api/trigger-call', async (req, res) => {
   try {
-    if (!config.testPatientPhoneNumber) {
-      res.status(400).json({ error: 'TEST_PATIENT_PHONE_NUMBER is not configured.' });
+    const requestedPatientId = req.body?.patientId;
+    const patient = requestedPatientId ? getDemoPatient(requestedPatientId) : getDefaultDemoPatient();
+    if (!patient) {
+      res.status(400).json({ error: 'No demo patient is configured.' });
       return;
     }
-    const call = await placeIntakeCall(config.testPatientPhoneNumber);
-    res.json({ callSid: call.sid, to: config.testPatientPhoneNumber });
+    if (!patient.phoneNumber) {
+      res.status(400).json({ error: `No phone number configured for ${patient.fullName}.` });
+      return;
+    }
+    const call = await placeIntakeCall({ patientId: patient.id });
+    res.json({ callSid: call.sid, patient: publicDemoPatient(patient), to: patient.phoneNumber });
   } catch (err) {
     console.error('[dashboard] POST /api/trigger-call failed:', err);
     res.status(500).json({ error: err.message || 'Failed to place call' });
   }
+});
+
+router.get('/api/demo-patients', (req, res) => {
+  res.json({ patients: listDemoPatients().map(publicDemoPatient) });
 });
 
 // GET /api/records — JSON list of recent intake records for the dashboard.
@@ -984,4 +994,3 @@ $('#callbtn').addEventListener('click', triggerCall);
 `;
 
 export default router;
-

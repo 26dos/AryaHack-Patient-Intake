@@ -54,6 +54,7 @@ import {
   CONSENT_SCRIPT,
 } from './intakeSchema.js';
 import { checkEmergency, looksLikeClinicalAdviceRequest } from './guardrails.js';
+import { dobToDigits } from './demoPatients.js';
 
 // ---------------------------------------------------------------------------------------------
 // Gemini client + model fallback
@@ -95,6 +96,8 @@ function getSession(callSid) {
       stage: 'greeting',
       greetingSent: false,
       greetingRetries: 0,
+      dobRetries: 0,
+      dobVerified: false,
       consentGiven: false,
       consentRetries: 0,
       history: [], // Gemini Content[] used to reconstruct the interview chat each turn
@@ -342,16 +345,9 @@ async function sendInterviewTurn(session, transcript, systemInstruction) {
         let toolCalls = (response.functionCalls() || []).map((fc) => ({ tool: fc.name, args: fc.args || {} }));
         let replyText = (response.text() || '').trim();
 
-        // If Gemini returned only function call(s) with no accompanying spoken text, do one
-        // follow-up round trip sending synthetic function responses so it can produce the
-        // natural-language reply (standard Gemini function-calling pattern).
-        if (toolCalls.length > 0 && !replyText) {
-          const functionResponseParts = toolCalls.map((tc) => ({
-            functionResponse: { name: tc.tool, response: { status: 'recorded' } },
-          }));
-          const followUp = await chat.sendMessage(functionResponseParts);
-          replyText = (followUp.response.text() || '').trim();
-        }
+        // Demo reliability: do not spend a second Gemini round trip just to get spoken text after
+        // function calls. The caller has a fallback reply, and this avoids blowing Twilio's webhook
+        // response window when Gemini is slow.
 
         cachedModelName = modelName;
         session.history = await chat.getHistory();
@@ -373,7 +369,13 @@ async function sendInterviewTurn(session, transcript, systemInstruction) {
 // Greeting / consent templating
 // ---------------------------------------------------------------------------------------------
 
-function buildGreeting(capturedFieldsSnapshot) {
+function buildGreeting(capturedFieldsSnapshot, patientContext) {
+  if (patientContext?.fullName) {
+    const appt = patientContext.appointmentDatetime || capturedFieldsSnapshot?.appointment_datetime;
+    const apptPhrase = appt ? ` about your upcoming appointment ${appt}` : ' about an upcoming appointment';
+    return `Hi, this is Riverside Cardiology calling for ${patientContext.fullName}${apptPhrase}. To protect your privacy, please enter the patient's eight digit date of birth using your keypad. For example, January second, nineteen eighty would be zero one zero two one nine eight zero.`;
+  }
+
   const name = fieldValue(capturedFieldsSnapshot, 'full_name');
   // `appointment_datetime` is NOT part of ALL_FIELD_KEYS / the intake schema contract — it's an
   // optional convenience key the caller may pass in capturedFieldsSnapshot (e.g. looked up from
@@ -399,8 +401,22 @@ function buildGreeting(capturedFieldsSnapshot) {
  * @returns {Promise<{replyText: string, toolCalls: Array<{tool: string, args: object}>, consentGiven: boolean, stage: string, emergencyDetected: boolean, endCall: boolean}>}
  */
 export async function runTurn({ callSid, transcript, capturedFieldsSnapshot = {} }) {
+  return runTurnWithContext({ callSid, transcript, capturedFieldsSnapshot });
+}
+
+/**
+ * @param {{ callSid: string, transcript?: string|null, digits?: string|null, capturedFieldsSnapshot?: object, patientContext?: object|null }} args
+ */
+export async function runTurnWithContext({
+  callSid,
+  transcript,
+  digits = null,
+  capturedFieldsSnapshot = {},
+  patientContext = null,
+}) {
   const session = getSession(callSid);
   const text = (transcript || '').trim();
+  const digitText = String(digits || '').replace(/\D/g, '');
 
   // ---- Hard-coded emergency pre-check, runs before anything reaches Gemini (PRD Section 10). ----
   if (text && checkEmergency(text)) {
@@ -419,12 +435,62 @@ export async function runTurn({ callSid, transcript, capturedFieldsSnapshot = {}
     if (!session.greetingSent) {
       session.greetingSent = true;
       return {
-        replyText: buildGreeting(capturedFieldsSnapshot),
+        replyText: buildGreeting(capturedFieldsSnapshot, patientContext),
         toolCalls: [],
         consentGiven: false,
         stage: 'greeting',
         emergencyDetected: false,
         endCall: false,
+        inputMode: patientContext?.dateOfBirth ? 'dtmf' : 'speech',
+        numDigits: patientContext?.dateOfBirth ? 8 : undefined,
+        useTts: false,
+      };
+    }
+
+    if (patientContext?.dateOfBirth && !session.dobVerified) {
+      const expectedDob = dobToDigits(patientContext.dateOfBirth);
+      if (digitText && digitText === expectedDob) {
+        session.dobVerified = true;
+        session.stage = 'consent';
+        return {
+          replyText: `Thank you, that matches our records. ${CONSENT_SCRIPT}`,
+          toolCalls: [],
+          consentGiven: false,
+          stage: 'consent',
+          emergencyDetected: false,
+          endCall: false,
+          verifiedDateOfBirth: patientContext.dateOfBirth,
+          useTts: false,
+        };
+      }
+
+      if (session.dobRetries === 0) {
+        session.dobRetries += 1;
+        return {
+          replyText:
+            "Sorry, that didn't match our records. Please try once more: enter the patient's eight digit date of birth using your keypad.",
+          toolCalls: [],
+          consentGiven: false,
+          stage: 'greeting',
+          emergencyDetected: false,
+          endCall: false,
+          inputMode: 'dtmf',
+          numDigits: 8,
+          useTts: false,
+        };
+      }
+
+      session.stage = 'done';
+      return {
+        replyText:
+          "I'm sorry, I couldn't verify the date of birth, so I can't continue this intake call. Please contact the office directly. Goodbye.",
+        toolCalls: [],
+        consentGiven: false,
+        stage: 'verification_failed',
+        emergencyDetected: false,
+        endCall: true,
+        callStatus: 'verification_failed',
+        useTts: false,
       };
     }
 
@@ -439,6 +505,7 @@ export async function runTurn({ callSid, transcript, capturedFieldsSnapshot = {}
         stage: 'greeting',
         emergencyDetected: false,
         endCall: false,
+        useTts: false,
       };
     }
     // Affirm, unclear, or a second decline: proceed rather than dead-ending (no infinite retry).
@@ -452,6 +519,7 @@ export async function runTurn({ callSid, transcript, capturedFieldsSnapshot = {}
       stage: 'consent',
       emergencyDetected: false,
       endCall: false,
+      useTts: false,
     };
   }
 
@@ -470,6 +538,7 @@ export async function runTurn({ callSid, transcript, capturedFieldsSnapshot = {}
         stage: 'interview',
         emergencyDetected: false,
         endCall: false,
+        useTts: false,
       };
     }
 
@@ -483,6 +552,7 @@ export async function runTurn({ callSid, transcript, capturedFieldsSnapshot = {}
         stage: 'consent',
         emergencyDetected: false,
         endCall: false,
+        useTts: false,
       };
     }
 
@@ -497,6 +567,8 @@ export async function runTurn({ callSid, transcript, capturedFieldsSnapshot = {}
       stage: 'done',
       emergencyDetected: false,
       endCall: true,
+      callStatus: 'consent_declined',
+      useTts: false,
     };
   }
 
@@ -510,6 +582,7 @@ export async function runTurn({ callSid, transcript, capturedFieldsSnapshot = {}
       stage: 'done',
       emergencyDetected: false,
       endCall: true,
+      useTts: false,
     };
   }
 

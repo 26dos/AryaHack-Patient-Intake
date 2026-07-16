@@ -198,6 +198,21 @@ Optional for `npm run test-call` without passing a phone number:
 TEST_PATIENT_PHONE_NUMBER=...
 ```
 
+The backend also includes a generated demo patient roster. `TEST_PATIENT_PHONE_NUMBER`
+is used as the default phone for Maya Rivera; additional fixture numbers can be
+overridden when you have more verified test phones:
+
+```bash
+DEMO_PATIENT_MAYA_PHONE=...
+DEMO_PATIENT_DANIEL_PHONE=...
+DEMO_PATIENT_ELENA_PHONE=...
+DEMO_PATIENT_ID=pat-maya-rivera
+```
+
+The live call flow now seeds the patient profile before dialing, asks for DOB by
+keypad verification, then proceeds to consent and intake. Insurance remains
+self-reported intake data, not an identity verifier.
+
 Optional text-to-speech. If omitted, the server falls back to Twilio `<Say>`:
 
 ```bash
