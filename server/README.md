@@ -31,8 +31,8 @@ DEMO_PATIENT_ELENA_PHONE=...
 DEMO_PATIENT_ID=pat-maya-rivera
 ```
 
-Calls seed the selected patient before dialing, verify DOB by keypad, then move
-to consent and intake. Insurance ID remains self-reported intake data for the
+Calls seed the selected patient before dialing, verify DOB by keypad, then play
+the AI/recording disclosure and move to intake. Insurance ID remains self-reported intake data for the
 demo, not a verifier.
 
 ## Module map
@@ -41,7 +41,7 @@ demo, not a verifier.
 - `src/routes/voice.js` — Twilio webhook handlers (`/voice/incoming`, `/voice/gather`, `/voice/status`), TwiML generation, tool-call → Supabase field mapping, SMS summary dispatch
 - `src/routes/dashboard.js` — live "mock EHR" dashboard (`/`, `/api/records`)
 - `src/routes/audio.js` — serves ElevenLabs-synthesized clips for `<Play>`
-- `src/lib/conversation.js` — Gemini tool-calling conversation engine (stage machine: greeting → consent → interview → wrapup)
+- `src/lib/conversation.js` — Gemini tool-calling conversation engine (stage machine: greeting → disclosure → interview → wrapup)
 - `src/lib/guardrails.js` — hard-coded emergency keyword pre-check + clinical-advice-request detector
 - `src/lib/supabase.js` — idempotent record/field upserts, event log, completeness calc
 - `src/lib/tts.js` / `src/lib/audioStore.js` — ElevenLabs synthesis + in-memory audio serving, falls back to Twilio `<Say>`

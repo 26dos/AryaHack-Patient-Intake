@@ -3,7 +3,7 @@
 //
 // Run with: node scripts/test_conversation.js
 //
-// Simulates a patient call end-to-end: greeting -> consent -> interview (including a decline,
+// Simulates a patient call end-to-end: greeting -> disclosure -> interview (including a decline,
 // an unprompted volunteered field, and a mid-interview emergency utterance) -> wrapup/done.
 //
 // This script plays the role the Twilio webhook layer will eventually play: it owns a local
@@ -32,13 +32,12 @@ function applyToolCalls(snapshot, toolCalls) {
 }
 
 // Turn 0 transcript is null (call just connected). Every later turn is a scripted fake patient
-// utterance designed to exercise: identity confirm, consent decline handling isn't triggered here
-// (we affirm), an unprompted volunteered field (insurance before being asked), an explicit
-// decline (marks patient_declined), and an emergency phrase that must short-circuit Gemini.
+// utterance designed to exercise: identity confirm, an unprompted volunteered field (insurance
+// before being asked), an explicit decline (marks patient_declined), and an emergency phrase that
+// must short-circuit Gemini.
 const PATIENT_TURNS = [
   null, // triggers greeting
   "Yes, this is John Doe, and yes, my appointment is this Thursday at 10 AM.",
-  "Yeah, that's fine, go ahead.",
   "I've had a bad cough and sore throat for about a week, that's why I'm coming in. Oh, and by the way, my insurance is Blue Cross Blue Shield, member ID BC-88213-A.",
   "My date of birth is March 4th, 1990, and I'd rather not give you my emergency contact right now.",
   "Actually hold on -- I'm having chest pain and I can't breathe well right now.",

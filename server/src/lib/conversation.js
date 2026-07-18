@@ -1,7 +1,7 @@
 // Conversation / LLM engine for the AI voice intake agent (PRD Sections 6 & 10).
 //
 // Scope: conversation stage machine + Gemini tool-calling loop + guardrail wiring ONLY.
-// This module has NO side effects beyond in-memory per-call conversation state (stage, consent
+// This module has NO side effects beyond in-memory per-call conversation state (stage, disclosure
 // status, chat history). It does not touch Twilio, TTS, or Supabase — the caller (Twilio webhook
 // layer) is responsible for turning `toolCalls` into Supabase writes via something like
 // `upsertField(callSid, fieldKey, value, state)`, and for feeding `replyText` to TTS.
@@ -99,7 +99,6 @@ function getSession(callSid) {
       dobRetries: 0,
       dobVerified: false,
       consentGiven: false,
-      consentRetries: 0,
       history: [], // Gemini Content[] used to reconstruct the interview chat each turn
     });
   }
@@ -112,7 +111,7 @@ export function resetSession(callSid) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Yes/no keyword classification (used for the consent gate and greeting confirmation).
+// Yes/no keyword classification (used for greeting confirmation).
 // Deliberately simple/keyword-based per task guidance: "keep it simple and reliable over clever."
 // ---------------------------------------------------------------------------------------------
 
@@ -392,6 +391,23 @@ function buildGreeting(capturedFieldsSnapshot, patientContext) {
   return "Hi there! Hope you're having a good day. This is your doctor's office calling ahead of your upcoming appointment. Could I get your name, and can you confirm the date and time of your visit?";
 }
 
+function beginInterviewAfterDisclosure(session, prefix = '') {
+  session.consentGiven = true;
+  session.stage = 'interview';
+  const bridge = prefix ? `${prefix} ` : '';
+  return {
+    replyText:
+      `${bridge}${CONSENT_SCRIPT} ` +
+      "Let's get started — I just need to grab a few details so your doctor has everything ready for your visit. To begin, what's the main reason for your visit?",
+    toolCalls: [],
+    consentGiven: true,
+    stage: 'interview',
+    emergencyDetected: false,
+    endCall: false,
+    useTts: false,
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------------------------
@@ -451,16 +467,9 @@ export async function runTurnWithContext({
       const expectedDob = dobToDigits(patientContext.dateOfBirth);
       if (digitText && digitText === expectedDob) {
         session.dobVerified = true;
-        session.stage = 'consent';
         return {
-          replyText: `Thank you, that matches our records. ${CONSENT_SCRIPT}`,
-          toolCalls: [],
-          consentGiven: false,
-          stage: 'consent',
-          emergencyDetected: false,
-          endCall: false,
+          ...beginInterviewAfterDisclosure(session, 'Thank you, that matches our records.'),
           verifiedDateOfBirth: patientContext.dateOfBirth,
-          useTts: false,
         };
       }
 
@@ -509,67 +518,7 @@ export async function runTurnWithContext({
       };
     }
     // Affirm, unclear, or a second decline: proceed rather than dead-ending (no infinite retry).
-    session.stage = 'consent';
-    return {
-      // A short warm bridge, then the verbatim consent script (PRD Section 6 — the disclosure
-      // itself must play verbatim, so the warmth goes before it, not woven into it).
-      replyText: `Great, thank you! ${CONSENT_SCRIPT}`,
-      toolCalls: [],
-      consentGiven: false,
-      stage: 'consent',
-      emergencyDetected: false,
-      endCall: false,
-      useTts: false,
-    };
-  }
-
-  // ---- Stage: consent (hard gate — no medical tool calls until this returns true) ----
-  if (session.stage === 'consent') {
-    const verdict = classifyYesNo(text);
-
-    if (verdict === 'affirm') {
-      session.consentGiven = true;
-      session.stage = 'interview';
-      return {
-        replyText:
-          "Great, thank you. Let's get started — I just need to grab a few details so your doctor has everything ready for your visit. To begin, what's the main reason for your visit?",
-        toolCalls: [],
-        consentGiven: true,
-        stage: 'interview',
-        emergencyDetected: false,
-        endCall: false,
-        useTts: false,
-      };
-    }
-
-    if (session.consentRetries === 0) {
-      session.consentRetries += 1;
-      return {
-        replyText:
-          "No problem — just to confirm, is it okay if I continue and note a few details for your visit? You can say yes to continue, or no if you'd rather not.",
-        toolCalls: [],
-        consentGiven: false,
-        stage: 'consent',
-        emergencyDetected: false,
-        endCall: false,
-        useTts: false,
-      };
-    }
-
-    // Declined (or still ambiguous) after one re-ask: cannot collect medical info. End gracefully.
-    session.consentGiven = false;
-    session.stage = 'done';
-    return {
-      replyText:
-        "That's okay, we won't collect any medical details today. Thank you for your time, and we'll see you at your appointment. Goodbye.",
-      toolCalls: [],
-      consentGiven: false,
-      stage: 'done',
-      emergencyDetected: false,
-      endCall: true,
-      callStatus: 'consent_declined',
-      useTts: false,
-    };
+    return beginInterviewAfterDisclosure(session, 'Great, thank you!');
   }
 
   // ---- Stage: wrapup (deterministic close — one turn after completion was detected) ----
@@ -609,9 +558,9 @@ export async function runTurnWithContext({
     systemInstruction,
   );
 
-  // Defensive consent gate: interview stage structurally requires consentGiven === true already,
-  // but per the hard requirement that the STATE MACHINE (not the LLM) gates medical tool calls,
-  // strip any field-group tool calls here too if consent somehow isn't logged.
+  // Defensive disclosure invariant: interview should only be reachable after the disclosure has
+  // been played and continuation consent has been logged. If state ever drifts, suppress intake
+  // writes rather than persisting medical details without that marker.
   let toolCalls = rawToolCalls;
   if (!session.consentGiven) {
     toolCalls = toolCalls.filter((tc) => tc.tool === 'confirm_appointment' || tc.tool === 'end_interview');

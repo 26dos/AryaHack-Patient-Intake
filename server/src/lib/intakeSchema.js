@@ -68,6 +68,8 @@ export const EMERGENCY_KEYWORDS_MESSAGE =
   "It sounds like this may be a medical emergency. Please hang up right now and call 911, or go to your nearest emergency room. This call is not monitored for emergencies.";
 
 export const CONSENT_SCRIPT =
-  "Before we get started, I want to let you know this call is being recorded so I can complete your pre-visit intake accurately. " +
-  "The information you share will be added to your chart and reviewed by your care team. " +
-  "You're welcome to skip any question you'd rather not answer. Is it okay if we continue?";
+  "Before we begin, please note that you are speaking with an automated AI assistant. " +
+  "This call may be recorded and transcribed. " +
+  "The information you provide will be collected and used by Hope Clinic to assist with scheduling, intake, and providing services. " +
+  "By continuing, you consent to the recording, transcription, and use of this information as described in our privacy notice. " +
+  "You may end the call at any time.";

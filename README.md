@@ -2,13 +2,13 @@
 
 AI voice intake agent for pre-appointment patient calls, built for AI Healthcare Hack NYC.
 
-The system calls a patient, confirms identity and consent, collects structured intake details over a live phone conversation, writes the result to a mock EHR record, and sends a confirmation summary by SMS or email after the call.
+The system calls a patient, confirms identity, plays an AI and recording disclosure, collects structured intake details over a live phone conversation, writes the result to a mock EHR record, and sends a confirmation summary by SMS or email after the call.
 
 ## Why it matters
 
 Patient intake is still often handled through paper forms, portals, or repeated questions at check-in. That creates friction for patients, extra follow-up work for front-desk teams, and incomplete context for clinicians.
 
-This project shows a voice-first intake workflow that completes the chart before the visit while keeping the agent scoped to data collection only: no diagnosis, no treatment advice, consent before medical questions, and emergency escalation messaging.
+This project shows a voice-first intake workflow that completes the chart before the visit while keeping the agent scoped to data collection only: no diagnosis, no treatment advice, clear AI/recording disclosure before intake, and emergency escalation messaging.
 
 ## Demo
 
@@ -32,7 +32,7 @@ Call in progress:
 
 ### Live voice intake
 
-Run the backend from `server/` to place a real test call through Twilio. During the call, the agent confirms the patient and appointment, reads the consent script, gathers intake details, extracts structured fields with Gemini tool calls, and persists the record to Supabase.
+Run the backend from `server/` to place a real test call through Twilio. During the call, the agent confirms the patient and appointment, reads the AI/recording disclosure, gathers intake details, extracts structured fields with Gemini tool calls, and persists the record to Supabase.
 
 The live backend dashboard is available at:
 
@@ -48,7 +48,7 @@ It polls `/api/records` every 3 seconds so the mock EHR record can update while 
 2. Start the Express server and expose it with ngrok.
 3. Configure the Twilio number to use the ngrok URL.
 4. Place an outbound test call with `npm run test-call`.
-5. Answer as the patient and provide consent.
+5. Answer as the patient and continue after the AI/recording disclosure.
 6. Give intake details such as chief complaint, medications, allergies, insurance, and emergency contact.
 7. Show the mock EHR record updating as structured fields are captured.
 8. End the call and show completion status plus confirmation delivery.
@@ -104,7 +104,7 @@ sequenceDiagram
   P->>T: Speaks response
   T->>S: POST /voice/gather with SpeechResult
   S->>C: runTurn with transcript and snapshot
-  C->>C: Emergency check, consent gate, stage machine
+  C->>C: Emergency check, disclosure logging, stage machine
   C-->>S: Spoken reply and structured tool calls
   S->>DB: Atomic JSONB field merge
   D->>S: Poll /api/records
@@ -129,8 +129,8 @@ sequenceDiagram
 ## Technical highlights
 
 - **Real telephony loop:** Twilio Voice webhooks drive live calls, speech gathering, voicemail handling, status callbacks, and SMS attempts.
-- **LLM with deterministic control:** Gemini handles natural conversation and structured tool calls, while code controls greeting, consent, interview, wrap-up, and completion.
-- **Consent gate:** medical intake fields are not collected until the patient gives affirmative consent.
+- **LLM with deterministic control:** Gemini handles natural conversation and structured tool calls, while code controls greeting, disclosure, interview, wrap-up, and completion.
+- **Disclosure logging:** the AI/recording notice is played before intake, and continuation consent is logged without a separate yes/no gate.
 - **No silent blanks:** every required field is resolved as `captured`, `patient_declined`, or `unable_to_capture`.
 - **Safety guardrails:** emergency keywords are checked before the transcript reaches Gemini; clinical-advice requests are refused instead of answered.
 - **Reliable writes:** records are keyed by Twilio `CallSid`; Supabase field updates use an atomic Postgres JSONB merge function.
@@ -210,7 +210,7 @@ DEMO_PATIENT_ID=pat-maya-rivera
 ```
 
 The live call flow now seeds the patient profile before dialing, asks for DOB by
-keypad verification, then proceeds to consent and intake. Insurance remains
+keypad verification, then plays the AI/recording disclosure and proceeds to intake. Insurance remains
 self-reported intake data, not an identity verifier.
 
 Optional text-to-speech. If omitted, the server falls back to Twilio `<Say>`:
