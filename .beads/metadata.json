@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "AryaHack_Patient_Intake",
+  "project_id": "31877d7d-a387-4d2e-912b-e63af5448f28"
+}
