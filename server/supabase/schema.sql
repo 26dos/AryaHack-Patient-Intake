@@ -16,6 +16,7 @@ create table if not exists intake_records (
   consent_given boolean not null default false,
   consent_logged_at timestamptz,
   appointment_confirmed boolean not null default false,
+  preloaded_context jsonb not null default '{}'::jsonb,
   fields jsonb not null default '{}'::jsonb,
   sms_sent boolean not null default false,
   sms_sent_at timestamptz,
@@ -30,6 +31,7 @@ create table if not exists intake_records (
 -- channel (PRD Section 2 allows "SMS or email"). Guarded so this script stays re-runnable.
 alter table intake_records add column if not exists email_sent boolean not null default false;
 alter table intake_records add column if not exists email_sent_at timestamptz;
+alter table intake_records add column if not exists preloaded_context jsonb not null default '{}'::jsonb;
 
 create table if not exists call_events (
   id uuid primary key default gen_random_uuid(),

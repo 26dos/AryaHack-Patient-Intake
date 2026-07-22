@@ -6,13 +6,32 @@ import { upsertRecord, upsertField, logEvent, getRecord } from '../lib/supabase.
 import { synthesizeAndStore } from '../lib/tts.js';
 import { sendSms } from '../twilioClient.js';
 import { sendConfirmationEmail } from '../lib/email.js';
-import { FIELD_GROUPS, EMERGENCY_KEYWORDS_MESSAGE, ALL_FIELD_KEYS } from '../lib/intakeSchema.js';
+import { FIELD_GROUPS, FIELD_STATES, EMERGENCY_KEYWORDS_MESSAGE, ALL_FIELD_KEYS } from '../lib/intakeSchema.js';
 import { getDemoPatient, getDemoPatientByPhone } from '../lib/demoPatients.js';
 
 const router = express.Router();
 const { VoiceResponse } = twilio.twiml;
 
 const TOOL_TO_GROUP = Object.fromEntries(FIELD_GROUPS.map((g) => [g.tool, g]));
+const FIELD_STATE_SET = new Set(FIELD_STATES);
+const TOOL_ALIASES = {
+  record_identity: 'record_identity_verification',
+  record_appointment: 'record_appointment_verification',
+  record_visit_reason: 'record_visit_reason_update',
+  record_medications: 'record_medication_update',
+  record_allergies: 'record_allergy_update',
+  record_medical_history: 'record_relevant_history_update',
+  record_admin: 'record_conditional_admin_update',
+  record_insurance: 'record_conditional_admin_update',
+  record_patient_concerns: 'record_patient_questions',
+};
+const CONSENT_REQUIRED_GROUPS = new Set(
+  FIELD_GROUPS
+    .filter((g) => !['identity_verification', 'appointment_verification'].includes(g.group))
+    .map((g) => g.tool)
+);
+const APPOINTMENT_VERIFICATION_FIELDS =
+  FIELD_GROUPS.find((g) => g.group === 'appointment_verification')?.fields || [];
 const noiseRetries = new Map();
 const TERMINAL_NON_SUMMARY_STATUSES = new Set([
   'voicemail',
@@ -21,6 +40,69 @@ const TERMINAL_NON_SUMMARY_STATUSES = new Set([
   'consent_declined',
   'emergency_escalated',
 ]);
+const SUMMARY_FIELD_ORDER = [
+  'full_name',
+  'date_of_birth',
+  'phone_number',
+  'appointment_datetime',
+  'clinic_name',
+  'specialist_name',
+  'appointment_type',
+  'booking_reason',
+  ...ALL_FIELD_KEYS,
+];
+const PATIENT_SUMMARY_EXCLUDED_FIELDS = new Set(['referral_note', 'referring_provider_name']);
+const FIELD_LABELS = {
+  full_name: 'Name',
+  date_of_birth: 'Date of birth',
+  phone_number: 'Phone',
+  appointment_datetime: 'Appointment',
+  clinic_name: 'Clinic',
+  specialist_name: 'Specialist',
+  appointment_type: 'Appointment type',
+  booking_reason: 'Booking reason',
+  patient_stated_reason: 'Reason for visit',
+  chief_complaint_category: 'Visit category',
+  onset_duration: 'Onset/duration',
+  changes_since_booking: 'Changes since booking',
+  visit_goal: 'Visit goal',
+  current_medications: 'Current medications',
+  medication_changes: 'Medication changes',
+  medication_unknowns: 'Medication unknowns',
+  known_allergies: 'Known allergies',
+  new_allergies: 'New allergies',
+  allergy_reactions: 'Allergy reactions',
+  relevant_conditions: 'Relevant conditions',
+  relevant_procedures: 'Relevant procedures',
+  relevant_events: 'Relevant events',
+  insurance_payer_name: 'Insurance payer',
+  insurance_member_id: 'Insurance member ID',
+  insurance_group_number: 'Insurance group number',
+  preferred_contact_method: 'Preferred contact method',
+  preferred_language: 'Preferred language',
+  patient_questions: 'Questions for specialist',
+  emergency_contact_name: 'Emergency contact',
+  emergency_contact_relationship: 'Emergency contact relationship',
+  emergency_contact_phone: 'Emergency contact phone',
+  smoking_alcohol: 'Smoking/alcohol',
+  occupation: 'Occupation',
+  specialty_specific_social_history: 'Specialty-specific social history',
+};
+const SUMMARY_STATE_LABELS = {
+  preloaded: 'on file before call',
+  verified: 'verified from information on file',
+  updated: 'updated during call',
+  captured: 'provided during call',
+  patient_declined: 'declined during call',
+  unable_to_capture: 'needs office follow-up',
+  not_applicable: 'not applicable',
+};
+const SUMMARY_SECTIONS = [
+  { title: 'New or updated during this call', states: new Set(['updated', 'captured']) },
+  { title: 'Verified or already on file', states: new Set(['verified', 'preloaded']) },
+  { title: 'Needs office follow-up', states: new Set(['patient_declined', 'unable_to_capture']) },
+  { title: 'Not applicable', states: new Set(['not_applicable']) },
+];
 
 // Express 4 does NOT catch rejected promises thrown inside async route handlers — an unhandled
 // rejection there crashes the whole process (verified: a Supabase error mid-call took down the
@@ -105,6 +187,116 @@ function isLikelyNoise(speechResult, confidence) {
   return false;
 }
 
+function hasProvidedValue(value) {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+function valueFromFieldEntry(entry) {
+  if (entry && typeof entry === 'object' && Object.prototype.hasOwnProperty.call(entry, 'value')) {
+    return entry.value;
+  }
+  return entry;
+}
+
+function seededPreloadedContext(patient, phoneNumber) {
+  const context = { ...(patient?.preloadedContext || {}) };
+  const identity = { ...(context.patient_identity || {}) };
+  if (!identity.phone_number && phoneNumber) identity.phone_number = phoneNumber;
+  if (Object.keys(identity).length > 0) context.patient_identity = identity;
+  return context;
+}
+
+function findInPreloadedContext(context, fieldKey) {
+  for (const groupValue of Object.values(context || {})) {
+    if (!groupValue || typeof groupValue !== 'object') continue;
+    if (Object.prototype.hasOwnProperty.call(groupValue, fieldKey)) {
+      return groupValue[fieldKey];
+    }
+  }
+  return undefined;
+}
+
+function fieldValueFromRecordOrPatient(record, patient, fieldKey) {
+  const recordFieldValue = valueFromFieldEntry(record?.fields?.[fieldKey]);
+  if (hasProvidedValue(recordFieldValue)) return recordFieldValue;
+
+  const patientFieldValue = valueFromFieldEntry(patient?.preloadedIntakeFields?.[fieldKey]);
+  if (hasProvidedValue(patientFieldValue)) return patientFieldValue;
+
+  const recordContextValue = findInPreloadedContext(record?.preloaded_context, fieldKey);
+  if (hasProvidedValue(recordContextValue)) return recordContextValue;
+
+  const patientContextValue = findInPreloadedContext(patient?.preloadedContext, fieldKey);
+  if (hasProvidedValue(patientContextValue)) return patientContextValue;
+
+  if (fieldKey === 'appointment_datetime') return record?.appointment_datetime || patient?.appointmentDatetime;
+  if (fieldKey === 'phone_number') return record?.phone_number || patient?.phoneNumber;
+  return undefined;
+}
+
+function normalizeToolName(toolName) {
+  return TOOL_ALIASES[toolName] || toolName;
+}
+
+function valuesMatchForVerification(expected, actual) {
+  if (!hasProvidedValue(expected) || !hasProvidedValue(actual)) return false;
+  return String(expected).trim().toLowerCase() === String(actual).trim().toLowerCase();
+}
+
+function defaultStateForField(group, fieldKey, value, record, patient) {
+  if (!hasProvidedValue(value)) return 'unable_to_capture';
+  if (group.group === 'identity_verification') {
+    const expected = fieldValueFromRecordOrPatient(record, patient, fieldKey);
+    return valuesMatchForVerification(expected, value) ? 'verified' : 'captured';
+  }
+  if (group.group === 'appointment_verification') {
+    const expected = fieldValueFromRecordOrPatient(record, patient, fieldKey);
+    return valuesMatchForVerification(expected, value) ? 'verified' : 'updated';
+  }
+  if (group.group.endsWith('_update')) return 'updated';
+  return 'captured';
+}
+
+function normalizeFieldState(rawState, value, group, fieldKey, record, patient) {
+  if (rawState && FIELD_STATE_SET.has(rawState)) {
+    if (rawState === 'verified' && group.group === 'identity_verification') {
+      const expected = fieldValueFromRecordOrPatient(record, patient, fieldKey);
+      const valueToVerify = hasProvidedValue(value) ? value : expected;
+      return valuesMatchForVerification(expected, valueToVerify) ? 'verified' : 'captured';
+    }
+    return rawState;
+  }
+  return defaultStateForField(group, fieldKey, value, record, patient);
+}
+
+function orderedSummaryKeys(fields = {}) {
+  return Array.from(new Set([...SUMMARY_FIELD_ORDER, ...Object.keys(fields)])).filter((key) =>
+    Object.prototype.hasOwnProperty.call(fields, key)
+  );
+}
+
+function labelForField(key) {
+  return FIELD_LABELS[key] || key.replace(/_/g, ' ');
+}
+
+function formatSummaryValue(value) {
+  if (Array.isArray(value)) return value.filter(hasProvidedValue).join('; ');
+  if (value && typeof value === 'object') return JSON.stringify(value);
+  return String(value ?? '').trim();
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 async function buildNoiseRetryTwiml(callSid, patient) {
   const count = (noiseRetries.get(callSid) || 0) + 1;
   noiseRetries.set(callSid, count);
@@ -129,36 +321,81 @@ async function buildNoiseRetryTwiml(callSid, patient) {
 
 async function seedDemoPatient(callSid, patient, phoneNumber) {
   if (!patient) return;
+  const seededPhoneNumber = patient.phoneNumber || phoneNumber;
+  const preloadedContext = seededPreloadedContext(patient, seededPhoneNumber);
   await upsertRecord(callSid, {
-    phone_number: patient.phoneNumber || phoneNumber,
+    phone_number: seededPhoneNumber,
     appointment_datetime: patient.appointmentDatetime,
+    preloaded_context: preloadedContext,
   });
-  await upsertField(callSid, 'full_name', patient.fullName, 'captured');
-  await upsertField(callSid, 'preferred_language', patient.preferredLanguage, 'captured');
-  await logEvent(callSid, 'demo_patient_seeded', { patientId: patient.id });
+
+  const preloadedFields = { ...(patient.preloadedIntakeFields || {}) };
+  if (seededPhoneNumber) {
+    preloadedFields.phone_number = {
+      ...(preloadedFields.phone_number || {}),
+      value: seededPhoneNumber,
+      state: preloadedFields.phone_number?.state || 'preloaded',
+    };
+  }
+
+  const seededFieldKeys = [];
+  for (const [fieldKey, entry] of Object.entries(preloadedFields)) {
+    const value = valueFromFieldEntry(entry);
+    if (!hasProvidedValue(value)) continue;
+    const state = FIELD_STATE_SET.has(entry?.state) ? entry.state : 'preloaded';
+    await upsertField(callSid, fieldKey, value, state);
+    seededFieldKeys.push(fieldKey);
+  }
+
+  await logEvent(callSid, 'demo_patient_seeded', {
+    patientId: patient.id,
+    preloadedFieldKeys: seededFieldKeys,
+  });
 }
 
-async function applyToolCalls(callSid, toolCalls = []) {
+async function applyToolCalls(callSid, toolCalls = [], { record = null, patient = null, consentLogged = false } = {}) {
   for (const call of toolCalls) {
     try {
-      if (call.tool === 'confirm_appointment') {
+      const toolName = normalizeToolName(call.tool);
+      if (toolName === 'confirm_appointment') {
         await upsertRecord(callSid, { appointment_confirmed: !!call.args?.confirmed });
+        if (call.args?.confirmed) {
+          for (const field of APPOINTMENT_VERIFICATION_FIELDS) {
+            const value = fieldValueFromRecordOrPatient(record, patient, field);
+            if (hasProvidedValue(value)) {
+              await upsertField(callSid, field, value, 'verified');
+            }
+          }
+        }
         continue;
       }
-      if (call.tool === 'end_interview') {
+      if (toolName === 'end_interview') {
         await logEvent(callSid, 'end_interview', call.args);
         continue;
       }
-      const group = TOOL_TO_GROUP[call.tool];
+      const group = TOOL_TO_GROUP[toolName];
       if (!group) {
         await logEvent(callSid, 'unknown_tool_call', call);
+        continue;
+      }
+      if (CONSENT_REQUIRED_GROUPS.has(group.tool) && !consentLogged) {
+        await logEvent(callSid, 'tool_call_suppressed_before_consent', call);
         continue;
       }
       for (const field of group.fields) {
         const args = call.args || {};
         if (!(field in args) && !(`${field}_state` in args)) continue; // untouched this turn
-        const value = args[field] ?? null;
-        const state = args[`${field}_state`] || (value != null ? 'captured' : 'unable_to_capture');
+        const hasValue = Object.prototype.hasOwnProperty.call(args, field);
+        const rawValue = hasValue ? args[field] : null;
+        const rawState = args[`${field}_state`];
+        if (rawState && !FIELD_STATE_SET.has(rawState)) {
+          await logEvent(callSid, 'invalid_field_state', { tool: call.tool, field, state: rawState });
+        }
+        const state = normalizeFieldState(rawState, rawValue, group, field, record, patient);
+        const value =
+          !hasValue && ['preloaded', 'verified'].includes(state)
+            ? fieldValueFromRecordOrPatient(record, patient, field) ?? null
+            : rawValue;
         await upsertField(callSid, field, value, state);
       }
     } catch (err) {
@@ -172,7 +409,9 @@ async function buildTurnTwiml({ callSid, transcript, digits, patient }) {
   const record = await getRecord(callSid);
   const resolvedPatient = patient || getDemoPatientByPhone(record?.phone_number);
   const capturedFieldsSnapshot = { ...(record?.fields || {}) };
-  if (record?.appointment_datetime) capturedFieldsSnapshot.appointment_datetime = record.appointment_datetime;
+  if (record?.appointment_datetime && !capturedFieldsSnapshot.appointment_datetime) {
+    capturedFieldsSnapshot.appointment_datetime = { value: record.appointment_datetime, state: 'preloaded' };
+  }
 
   const result = await runTurnWithContext({
     callSid,
@@ -191,17 +430,35 @@ async function buildTurnTwiml({ callSid, transcript, digits, patient }) {
     return twiml;
   }
 
-  if (result.consentGiven !== undefined) {
+  let consentLoggedForWrites = record?.consent_given === true;
+  if (result.consentGiven === true && !consentLoggedForWrites) {
+    const consentLoggedAt = new Date().toISOString();
     await upsertRecord(callSid, {
-      consent_given: result.consentGiven,
-      consent_logged_at: result.consentGiven ? new Date().toISOString() : null,
+      consent_given: true,
+      consent_logged_at: consentLoggedAt,
     });
+    await logEvent(callSid, 'consent_logged', { consent_logged_at: consentLoggedAt, stage: result.stage });
+    consentLoggedForWrites = true;
+  } else if (result.consentGiven === false && result.callStatus === 'consent_declined') {
+    await upsertRecord(callSid, {
+      consent_given: false,
+      consent_logged_at: null,
+      call_status: 'consent_declined',
+    });
+    await logEvent(callSid, 'consent_declined', { stage: result.stage });
   }
 
   if (result.verifiedDateOfBirth) {
-    await upsertField(callSid, 'date_of_birth', result.verifiedDateOfBirth, 'captured');
+    await upsertField(callSid, 'date_of_birth', result.verifiedDateOfBirth, 'verified');
+    if (resolvedPatient?.fullName) {
+      await upsertField(callSid, 'full_name', resolvedPatient.fullName, 'verified');
+    }
   }
-  await applyToolCalls(callSid, result.toolCalls);
+  await applyToolCalls(callSid, result.toolCalls, {
+    record,
+    patient: resolvedPatient,
+    consentLogged: consentLoggedForWrites,
+  });
   await logEvent(callSid, 'turn', { transcript, reply: result.replyText, stage: result.stage });
 
   if (result.endCall) {
@@ -306,45 +563,86 @@ router.post('/voice/amd', safeVoiceHandler(async (req, res) => {
   res.sendStatus(200);
 }));
 
-function buildIntakeSummaryLines(record) {
+function buildIntakeSummaryItems(record) {
   const fields = record.fields || {};
-  const lines = [];
-  for (const key of ALL_FIELD_KEYS) {
+  const items = [];
+  for (const key of orderedSummaryKeys(fields)) {
+    if (PATIENT_SUMMARY_EXCLUDED_FIELDS.has(key)) continue;
     const f = fields[key];
-    if (!f) continue;
-    const label = key.replace(/_/g, ' ');
-    if (f.state === 'captured' && f.value) {
-      lines.push(`${label}: ${f.value}`);
-    } else if (f.state === 'patient_declined') {
-      lines.push(`${label}: declined to share`);
+    if (!f || !FIELD_STATE_SET.has(f.state)) continue;
+    const value = formatSummaryValue(f.value);
+    const stateLabel = SUMMARY_STATE_LABELS[f.state] || f.state.replace(/_/g, ' ');
+
+    if (['preloaded', 'verified', 'updated', 'captured'].includes(f.state)) {
+      if (!hasProvidedValue(value)) continue;
+      items.push({
+        key,
+        state: f.state,
+        line: `${labelForField(key)}: ${value} (${stateLabel})`,
+      });
+    } else {
+      items.push({
+        key,
+        state: f.state,
+        line: `${labelForField(key)}: ${stateLabel}`,
+      });
     }
   }
-  return lines;
+  return items;
+}
+
+function buildIntakeSummarySections(record) {
+  const items = buildIntakeSummaryItems(record);
+  return SUMMARY_SECTIONS
+    .map((section) => ({
+      title: section.title,
+      lines: items.filter((item) => section.states.has(item.state)).map((item) => item.line),
+    }))
+    .filter((section) => section.lines.length > 0);
 }
 
 function buildSmsSummary(record) {
-  const lines = buildIntakeSummaryLines(record).map((l) => `- ${l}`);
-  return [
-    'Thanks for completing your pre-visit intake with Arya Health! Summary:',
-    ...lines,
-    'If anything looks wrong, call us back before your visit.',
-  ].join('\n');
+  const sections = buildIntakeSummarySections(record);
+  const lines = ['Thanks for completing your pre-visit intake with Arya Health. Summary:'];
+  if (sections.length === 0) {
+    lines.push('- No intake details were recorded.');
+  } else {
+    for (const section of sections) {
+      lines.push(`${section.title}:`);
+      lines.push(...section.lines.map((line) => `- ${line}`));
+    }
+  }
+  lines.push('If anything looks wrong, call us back before your visit.');
+  return lines.join('\n');
 }
 
 function buildEmailSummary(record) {
-  const lines = buildIntakeSummaryLines(record);
+  const sections = buildIntakeSummarySections(record);
   const text = [
     'Thanks for completing your pre-visit intake with Arya Health!',
     '',
-    'Summary of what we captured:',
-    ...lines.map((l) => `- ${l}`),
+    'Summary of what was captured, updated, verified, or already on file:',
+    ...(sections.length
+      ? sections.flatMap((section) => ['', `${section.title}:`, ...section.lines.map((line) => `- ${line}`)])
+      : ['', '- No intake details were recorded.']),
     '',
     'If anything looks wrong, call us back before your visit.',
   ].join('\n');
   const html = `
     <p>Thanks for completing your pre-visit intake with Arya Health!</p>
-    <p><strong>Summary of what we captured:</strong></p>
-    <ul>${lines.map((l) => `<li>${l}</li>`).join('')}</ul>
+    <p><strong>Summary of what was captured, updated, verified, or already on file:</strong></p>
+    ${
+      sections.length
+        ? sections
+            .map(
+              (section) =>
+                `<h3>${escapeHtml(section.title)}</h3><ul>${section.lines
+                  .map((line) => `<li>${escapeHtml(line)}</li>`)
+                  .join('')}</ul>`
+            )
+            .join('')
+        : '<ul><li>No intake details were recorded.</li></ul>'
+    }
     <p>If anything looks wrong, call us back before your visit.</p>
   `;
   return { text, html };

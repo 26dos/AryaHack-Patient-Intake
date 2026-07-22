@@ -11,11 +11,38 @@ const RECORD_PATCH_KEYS = [
   'consent_given',
   'consent_logged_at',
   'appointment_confirmed',
+  'preloaded_context',
   'sms_sent',
   'sms_sent_at',
   'email_sent',
   'email_sent_at',
 ];
+
+const INTENDED_FIELD_STATES = [
+  'preloaded',
+  'verified',
+  'updated',
+  'captured',
+  'patient_declined',
+  'unable_to_capture',
+  'not_applicable',
+];
+
+const RESOLVED_COMPLETENESS_STATES = new Set([
+  'verified',
+  'updated',
+  'captured',
+  'patient_declined',
+  'unable_to_capture',
+  'not_applicable',
+]);
+
+function validFieldStates() {
+  return Array.from(new Set([
+    ...(Array.isArray(FIELD_STATES) ? FIELD_STATES : []),
+    ...INTENDED_FIELD_STATES,
+  ]));
+}
 
 /**
  * Idempotent upsert of top-level intake_records fields, keyed by call_sid.
@@ -60,13 +87,14 @@ export async function upsertRecord(callSid, patch = {}) {
  * @param {string} callSid
  * @param {string} fieldKey
  * @param {any} value
- * @param {'captured'|'patient_declined'|'unable_to_capture'} state
+ * @param {'preloaded'|'verified'|'updated'|'captured'|'patient_declined'|'unable_to_capture'|'not_applicable'} state
  */
 export async function upsertField(callSid, fieldKey, value, state) {
   if (!callSid) throw new Error('upsertField requires a callSid');
   if (!fieldKey) throw new Error('upsertField requires a fieldKey');
-  if (!FIELD_STATES.includes(state)) {
-    throw new Error(`upsertField: invalid state "${state}". Must be one of: ${FIELD_STATES.join(', ')}`);
+  const states = validFieldStates();
+  if (!states.includes(state)) {
+    throw new Error(`upsertField: invalid state "${state}". Must be one of: ${states.join(', ')}`);
   }
 
   const patch = {
@@ -131,12 +159,15 @@ export async function listRecentRecords(limit = 20) {
  * field keys from intakeSchema.js.
  *
  * @param {Record<string, {value: any, state: string, updated_at: string}>} fields
- * @returns {{ totalRequired: number, captured: number, declinedOrUnable: number, missing: string[] }}
+ * @returns {{ totalRequired: number, resolved: number, captured: number, declinedOrUnable: number, unableToCapture: string[], unableToCaptureCount: number, deskFollowUp: string[], missing: string[] }}
  */
 export function computeCompleteness(fields = {}) {
   const safeFields = fields || {};
+  let resolved = 0;
   let captured = 0;
   let declinedOrUnable = 0;
+  const unableToCapture = [];
+  const deskFollowUp = [];
   const missing = [];
 
   for (const key of REQUIRED_P0_FIELD_KEYS) {
@@ -145,19 +176,33 @@ export function computeCompleteness(fields = {}) {
       missing.push(key);
       continue;
     }
+    if (RESOLVED_COMPLETENESS_STATES.has(entry.state)) {
+      resolved += 1;
+    } else {
+      missing.push(key);
+      continue;
+    }
+
     if (entry.state === 'captured') {
       captured += 1;
     } else if (entry.state === 'patient_declined' || entry.state === 'unable_to_capture') {
       declinedOrUnable += 1;
-    } else {
-      missing.push(key);
+    }
+
+    if (entry.state === 'unable_to_capture') {
+      unableToCapture.push(key);
+      deskFollowUp.push(key);
     }
   }
 
   return {
     totalRequired: REQUIRED_P0_FIELD_KEYS.length,
+    resolved,
     captured,
     declinedOrUnable,
+    unableToCapture,
+    unableToCaptureCount: unableToCapture.length,
+    deskFollowUp,
     missing,
   };
 }

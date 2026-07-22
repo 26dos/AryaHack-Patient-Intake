@@ -1,70 +1,203 @@
-// Standalone smoke test for src/lib/supabase.js against the LIVE Supabase project.
+// Standalone smoke test for src/lib/supabase.js.
+//
 // Run with: node scripts/test_supabase.js
 //
-// Requires supabase/schema.sql to have been applied to the project first
-// (intake_records, call_events tables + merge_intake_field() function).
+// Always runs deterministic completeness/state checks locally. Live Supabase writes run only when
+// SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are present.
 
-import {
+import assert from 'node:assert/strict';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import dotenv from 'dotenv';
+import { FIELD_STATES, REQUIRED_P0_FIELD_KEYS } from '../src/lib/intakeSchema.js';
+
+dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env') });
+
+const REQUIRED_SUPABASE_ENV = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
+const missingSupabaseEnv = REQUIRED_SUPABASE_ENV.filter((name) => !process.env[name]);
+const hasLiveSupabaseEnv = missingSupabaseEnv.length === 0;
+
+// supabase.js creates a client at import time. Prime missing vars with inert values so the
+// deterministic computeCompleteness checks can run without live credentials.
+for (const [key, value] of Object.entries({
+  TWILIO_ACCOUNT_SID: 'offline-smoke',
+  TWILIO_AUTH_TOKEN: 'offline-smoke',
+  GEMINI_API_KEY: 'offline-smoke',
+  SUPABASE_URL: 'http://127.0.0.1:54321',
+  SUPABASE_SERVICE_ROLE_KEY: 'offline-smoke',
+})) {
+  if (!process.env[key]) process.env[key] = value;
+}
+
+const {
   upsertRecord,
   upsertField,
   getRecord,
   logEvent,
   computeCompleteness,
-} from '../src/lib/supabase.js';
+} = await import('../src/lib/supabase.js');
+
+const COMPLETENESS_STATES = [
+  'verified',
+  'updated',
+  'captured',
+  'patient_declined',
+  'unable_to_capture',
+  'not_applicable',
+];
 
 function section(title) {
   console.log(`\n=== ${title} ===`);
 }
 
-async function main() {
-  const callSid = `test-${Date.now()}`;
-  console.log(`Using fake call_sid: ${callSid}`);
-
-  section('upsertRecord (create)');
-  const created = await upsertRecord(callSid, {
-    call_status: 'in_progress',
-    phone_number: '+15551234567',
-  });
-  console.log(created);
-
-  section('upsertRecord (patch again — same call_sid, should update not duplicate)');
-  const patched = await upsertRecord(callSid, {
-    appointment_datetime: '2026-07-15T14:00:00-04:00',
-  });
-  console.log(patched);
-
-  section('upsertField x3 (including a repeat of the same key to prove idempotency)');
-  await upsertField(callSid, 'full_name', 'Jane Doe', 'captured');
-  await upsertField(callSid, 'date_of_birth', '1990-01-01', 'captured');
-  // Call the SAME key twice — should overwrite, not duplicate/append.
-  await upsertField(callSid, 'full_name', 'Jane A. Doe', 'captured');
-  await upsertField(callSid, 'insurance_payer_name', null, 'patient_declined');
-  await upsertField(callSid, 'emergency_contact_phone', null, 'unable_to_capture');
-
-  section('upsertField invalid state should throw');
-  try {
-    await upsertField(callSid, 'preferred_language', 'en', 'bogus_state');
-    console.log('ERROR: expected throw, did not throw');
-  } catch (err) {
-    console.log('OK, threw as expected:', err.message);
+function sampleValueFor(key, state) {
+  if (state === 'patient_declined' || state === 'unable_to_capture' || state === 'not_applicable') {
+    return null;
   }
-
-  section('logEvent');
-  const event = await logEvent(callSid, 'turn', { speaker: 'patient', text: 'My name is Jane Doe.' });
-  console.log(event);
-
-  section('getRecord (final)');
-  const record = await getRecord(callSid);
-  console.log(JSON.stringify(record, null, 2));
-
-  section('computeCompleteness');
-  console.log(computeCompleteness(record.fields));
-
-  section('DONE');
-  console.log(`call_sid ${callSid} — inspect intake_records / call_events tables to confirm.`);
+  return `sample ${key}`;
 }
 
-main().catch((err) => {
-  console.error('\nTEST FAILED:', err);
-  process.exit(1);
-});
+function buildCompleteFields() {
+  return Object.fromEntries(
+    REQUIRED_P0_FIELD_KEYS.map((key, index) => {
+      const state = COMPLETENESS_STATES[index % COMPLETENESS_STATES.length];
+      return [
+        key,
+        {
+          value: sampleValueFor(key, state),
+          state,
+          updated_at: '2026-07-22T00:00:00.000Z',
+        },
+      ];
+    }),
+  );
+}
+
+async function runDeterministicChecks() {
+  section('offline state and completeness checks');
+
+  for (const state of ['preloaded', ...COMPLETENESS_STATES]) {
+    assert.ok(FIELD_STATES.includes(state), `FIELD_STATES should accept ${state}`);
+  }
+
+  const completeFields = buildCompleteFields();
+  const complete = computeCompleteness(completeFields);
+  assert.equal(complete.totalRequired, REQUIRED_P0_FIELD_KEYS.length);
+  assert.equal(complete.resolved, REQUIRED_P0_FIELD_KEYS.length);
+  assert.deepEqual(complete.missing, []);
+  assert.ok(complete.captured > 0, 'captured fields should be counted');
+  assert.ok(complete.declinedOrUnable > 0, 'declined/unable fields should be counted');
+  assert.ok(complete.unableToCapture.length > 0, 'unable_to_capture fields should be tracked');
+  assert.deepEqual(complete.deskFollowUp, complete.unableToCapture);
+
+  const preloadedOnlyFields = {
+    ...completeFields,
+    date_of_birth: {
+      value: '1984-09-14',
+      state: 'preloaded',
+      updated_at: '2026-07-22T00:00:00.000Z',
+    },
+  };
+  const preloadedOnly = computeCompleteness(preloadedOnlyFields);
+  assert.equal(preloadedOnly.resolved, REQUIRED_P0_FIELD_KEYS.length - 1);
+  assert.ok(preloadedOnly.missing.includes('date_of_birth'));
+
+  for (const oldOptionalKey of [
+    'primary_care_provider',
+    'referral_note',
+    'referring_provider_name',
+    'emergency_contact_name',
+    'emergency_contact_relationship',
+    'emergency_contact_phone',
+  ]) {
+    assert.ok(!REQUIRED_P0_FIELD_KEYS.includes(oldOptionalKey), `${oldOptionalKey} should not be P0-required`);
+  }
+
+  await assert.rejects(
+    () => upsertField('offline-invalid-state', 'preferred_language', 'English', 'bogus_state'),
+    /invalid state/,
+  );
+
+  console.log('PASS: expanded states and completeness behavior match the current schema contract.');
+}
+
+async function runLiveSupabaseChecks() {
+  section('live Supabase writes');
+
+  if (!hasLiveSupabaseEnv) {
+    console.log(`SKIP: missing live Supabase credentials: ${missingSupabaseEnv.join(', ')}`);
+    return;
+  }
+
+  const callSid = `smoke-${Date.now()}`;
+  console.log(`Using fake call_sid: ${callSid}`);
+
+  await upsertRecord(callSid, {
+    call_status: 'in_progress',
+    phone_number: '+15551234567',
+    appointment_datetime: 'Thursday, July 23, 2026 at 2:30 PM',
+    consent_given: true,
+    preloaded_context: {
+      patient_identity: {
+        full_name: 'Maya Rivera',
+        date_of_birth: '1984-09-14',
+        phone_number: '+15551234567',
+      },
+      appointment_context: {
+        appointment_datetime: 'Thursday, July 23, 2026 at 2:30 PM',
+        clinic_name: 'Riverside Cardiology',
+        specialist_name: 'Dr. Priya Shah, MD',
+        appointment_type: 'New patient cardiology consult',
+      },
+    },
+  });
+
+  await upsertRecord(callSid, { appointment_confirmed: true });
+
+  const stateWrites = [
+    ['phone_number', '+15551234567', 'preloaded'],
+    ['date_of_birth', '1984-09-14', 'verified'],
+    ['patient_stated_reason', 'Palpitations are more frequent since booking', 'updated'],
+    ['current_medications', 'Lisinopril continued; atorvastatin stopped', 'updated'],
+    ['medication_unknowns', null, 'unable_to_capture'],
+    ['known_allergies', 'Penicillin rash', 'verified'],
+    ['new_allergies', null, 'not_applicable'],
+    ['insurance_member_id', null, 'patient_declined'],
+    ['preferred_language', 'English', 'captured'],
+  ];
+
+  for (const [fieldKey, value, state] of stateWrites) {
+    await upsertField(callSid, fieldKey, value, state);
+  }
+
+  await upsertField(callSid, 'full_name', 'Maya Rivera', 'captured');
+  await upsertField(callSid, 'full_name', 'Maya A. Rivera', 'updated');
+  await logEvent(callSid, 'smoke_test_turn', { speaker: 'patient', text: 'I updated my medications.' });
+
+  const record = await getRecord(callSid);
+  assert.ok(record, 'record should exist after live smoke writes');
+  assert.equal(record.call_sid, callSid);
+  assert.equal(record.fields.full_name.value, 'Maya A. Rivera');
+  assert.equal(record.fields.full_name.state, 'updated');
+
+  for (const [, , state] of stateWrites) {
+    assert.ok(
+      Object.values(record.fields).some((entry) => entry.state === state),
+      `expected at least one persisted field with state ${state}`,
+    );
+  }
+
+  console.log('PASS: live Supabase upserts accepted expanded states and idempotent field updates.');
+}
+
+try {
+  await runDeterministicChecks();
+  await runLiveSupabaseChecks();
+  section('DONE');
+} catch (err) {
+  console.error('\nTEST FAILED:', err?.message || err);
+  if (err?.status) console.error('Status:', err.status);
+  if (err?.statusText) console.error('StatusText:', err.statusText);
+  if (err?.details) console.error('Details:', err.details);
+  process.exitCode = 1;
+}

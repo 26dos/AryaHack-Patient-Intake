@@ -1,6 +1,12 @@
 import { Router } from 'express';
 import { listRecentRecords, getRecord, computeCompleteness } from '../lib/supabase.js';
-import { FIELD_GROUPS, REQUIRED_P0_FIELD_KEYS, ALL_FIELD_KEYS } from '../lib/intakeSchema.js';
+import {
+  FIELD_GROUPS,
+  REQUIRED_P0_FIELD_KEYS,
+  ALL_FIELD_KEYS,
+  PRELOADED_CONTEXT_GROUPS,
+  FIELD_STATES,
+} from '../lib/intakeSchema.js';
 import { placeIntakeCall } from '../twilioClient.js';
 import { getDefaultDemoPatient, getDemoPatient, listDemoPatients, publicDemoPatient } from '../lib/demoPatients.js';
 
@@ -72,6 +78,8 @@ router.get('/api/records/:callSid', async (req, res) => {
 router.get('/', (req, res) => {
   const schemaJson = JSON.stringify({
     fieldGroups: FIELD_GROUPS,
+    fieldStates: FIELD_STATES,
+    preloadedContextGroups: PRELOADED_CONTEXT_GROUPS,
     requiredKeys: REQUIRED_P0_FIELD_KEYS,
     allKeys: ALL_FIELD_KEYS,
   });
@@ -190,6 +198,7 @@ const DASHBOARD_HTML_HEAD = `<!doctype html>
   .group{margin-top:22px}
   .group > h3{font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);margin:0 0 9px;display:flex;align-items:center;gap:8px}
   .group > h3 .ln{flex:1;height:1px;background:var(--line-2)}
+  .group-note{font-size:12.5px;color:var(--ink-2);margin:-2px 0 9px}
 
   .field{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:13px 16px;margin-bottom:8px;box-shadow:var(--shadow);display:grid;grid-template-columns:1fr auto;gap:4px 14px;align-items:start;opacity:.45;transition:opacity .4s, box-shadow .4s, border-color .4s}
   .field.filled{opacity:1}
@@ -204,6 +213,10 @@ const DASHBOARD_HTML_HEAD = `<!doctype html>
   .tag{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;font-size:10.5px;font-weight:600;letter-spacing:.02em;white-space:nowrap;align-self:center}
   .tag svg{width:11px;height:11px}
   .tag.ok{background:var(--ready-soft);color:var(--ready)}
+  .tag.preload{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line)}
+  .tag.verified{background:var(--ready-soft);color:var(--ready)}
+  .tag.updated{background:var(--teal-soft);color:var(--teal-deep)}
+  .tag.na{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line)}
   .tag.declined{background:var(--surface-2);color:var(--ink-3);border:1px solid var(--line)}
   .tag.confirm{background:var(--attn-soft);color:var(--attn)}
   .tag.wait{background:var(--surface-2);color:var(--ink-3)}
@@ -381,24 +394,77 @@ for (var gi = 0; gi < SCHEMA.fieldGroups.length; gi++) {
   }
 }
 
+var SCHEMA_GROUPS = {};
+for (var sgi = 0; sgi < SCHEMA.fieldGroups.length; sgi++) {
+  var schemaGroup = SCHEMA.fieldGroups[sgi];
+  SCHEMA_GROUPS[schemaGroup.group] = schemaGroup;
+}
+
+function schemaFields(groupName) {
+  var group = SCHEMA_GROUPS[groupName];
+  return group ? group.fields.slice() : [];
+}
+
+function concatFields() {
+  var out = [];
+  for (var i = 0; i < arguments.length; i++) {
+    out = out.concat(arguments[i] || []);
+  }
+  return out;
+}
+
+var CONDITIONAL_ADMIN_KEYS = {};
+schemaFields('conditional_admin_update').forEach(function (key) {
+  CONDITIONAL_ADMIN_KEYS[key] = true;
+});
+
+var HIDDEN_FIELD_KEYS = {
+  referral_note: true,
+  referring_provider_name: true
+};
+
+var LEGACY_FIELD_ALIASES = {
+  patient_stated_reason: 'chief_complaint_text',
+  current_medications: 'medications',
+  known_allergies: 'allergies',
+  relevant_conditions: 'prior_conditions'
+};
+
 var FIELD_META = {
   full_name: { label: 'Full name' },
   date_of_birth: { label: 'Date of birth', mono: true },
+  phone_number: { label: 'Phone', mono: true },
+  appointment_datetime: { label: 'Appointment' },
+  clinic_name: { label: 'Clinic' },
+  specialist_name: { label: 'Specialist' },
+  appointment_type: { label: 'Visit type' },
+  booking_reason: { label: 'Booking reason' },
   preferred_language: { label: 'Preferred language' },
-  emergency_contact_name: { label: 'Contact' },
-  emergency_contact_relationship: { label: 'Relationship' },
-  emergency_contact_phone: { label: 'Phone', mono: true },
-  insurance_payer_name: { label: 'Payer', unverified: true },
+  preferred_contact_method: { label: 'Best contact method' },
+  insurance_payer_name: { label: 'Insurance payer', unverified: true },
   insurance_member_id: { label: 'Member ID', mono: true, unverified: true },
   insurance_group_number: { label: 'Group number', mono: true, unverified: true },
-  chief_complaint_text: { label: "In the patient's words" },
-  chief_complaint_category: { label: 'Category' },
-  medications: { label: 'Current medications' },
-  allergies: { label: 'Drug allergies' },
-  prior_conditions: { label: 'Ongoing conditions' },
-  smoking_alcohol: { label: 'Social history', optional: true },
+  patient_stated_reason: { label: "Patient's words" },
+  chief_complaint_category: { label: 'Structured category' },
+  onset_duration: { label: 'Onset / duration' },
+  changes_since_booking: { label: 'Changes since booking' },
+  visit_goal: { label: 'Goal for visit' },
+  current_medications: { label: 'Medication list' },
+  medication_changes: { label: 'Medication changes' },
+  medication_unknowns: { label: 'Medication unknowns' },
+  known_allergies: { label: 'Known allergies' },
+  new_allergies: { label: 'New allergies' },
+  allergy_reactions: { label: 'Reactions volunteered' },
+  relevant_conditions: { label: 'Relevant conditions' },
+  relevant_procedures: { label: 'Relevant procedures' },
+  relevant_events: { label: 'Relevant events' },
+  patient_questions: { label: 'Questions for specialist', optional: true },
+  emergency_contact_name: { label: 'Emergency contact', optional: true },
+  emergency_contact_relationship: { label: 'Relationship', optional: true },
+  emergency_contact_phone: { label: 'Emergency phone', mono: true, optional: true },
+  smoking_alcohol: { label: 'Smoking / alcohol', optional: true },
   occupation: { label: 'Occupation', optional: true },
-  referring_provider_name: { label: 'Referring provider' }
+  specialty_specific_social_history: { label: 'Specialty-specific social history', optional: true }
 };
 
 function metaFor(key) {
@@ -406,31 +472,66 @@ function metaFor(key) {
 }
 
 var GROUP_DEFS = [
-  { key: 'identity', label: 'Identity', kind: 'fields', fields: ['full_name', 'date_of_birth', 'preferred_language'] },
-  { key: 'consent', label: 'Consent', kind: 'consent' },
-  { key: 'chief_complaint', label: 'Reason for visit', kind: 'fields', fields: ['chief_complaint_text', 'chief_complaint_category'] },
-  { key: 'medications', label: 'Medications', kind: 'fields', fields: ['medications'] },
-  { key: 'allergies', label: 'Allergies', kind: 'fields', fields: ['allergies'] },
-  { key: 'history', label: 'History', kind: 'fields', fields: ['prior_conditions', 'smoking_alcohol', 'occupation'] },
-  { key: 'insurance', label: 'Insurance', kind: 'fields', fields: ['insurance_payer_name', 'insurance_member_id', 'insurance_group_number'] },
-  { key: 'emergency_contact', label: 'Emergency contact', kind: 'contact', fields: ['emergency_contact_name', 'emergency_contact_relationship', 'emergency_contact_phone'] },
-  { key: 'pcp_referral', label: 'Referral', kind: 'fields', fields: ['referring_provider_name'] }
+  {
+    key: 'known_context',
+    label: 'Known clinic context',
+    kind: 'fields',
+    contextOnly: true,
+    badge: 'Context',
+    fields: ['full_name', 'date_of_birth', 'phone_number', 'appointment_datetime', 'clinic_name', 'specialist_name', 'appointment_type', 'booking_reason']
+  },
+  {
+    key: 'verification',
+    label: 'Verification',
+    kind: 'verification',
+    fields: concatFields(schemaFields('identity_verification'), schemaFields('appointment_verification'))
+  },
+  {
+    key: 'visit_reason_update',
+    label: 'Visit reason update',
+    kind: 'fields',
+    fields: schemaFields('visit_reason_update')
+  },
+  {
+    key: 'safety_updates',
+    label: 'Safety updates',
+    kind: 'fields',
+    fields: concatFields(schemaFields('medication_update'), schemaFields('allergy_update'))
+  },
+  {
+    key: 'relevant_history',
+    label: 'Relevant history',
+    kind: 'fields',
+    fields: concatFields(schemaFields('relevant_history_update'), schemaFields('patient_questions'))
+  },
+  {
+    key: 'admin_followup',
+    label: 'Admin follow-up',
+    kind: 'admin',
+    badge: 'Conditional',
+    fields: schemaFields('conditional_admin_update')
+  },
+  {
+    key: 'prechart_summary',
+    label: 'Pre-chart summary',
+    kind: 'summary'
+  }
 ];
 
 var KNOWN_FIELD_KEYS = {};
 GROUP_DEFS.forEach(function (g) {
   (g.fields || []).forEach(function (k) { KNOWN_FIELD_KEYS[k] = true; });
 });
+Object.keys(HIDDEN_FIELD_KEYS).forEach(function (k) { KNOWN_FIELD_KEYS[k] = true; });
+Object.keys(LEGACY_FIELD_ALIASES).forEach(function (k) { KNOWN_FIELD_KEYS[LEGACY_FIELD_ALIASES[k]] = true; });
 
 var PHASE_DEFS = [
-  { key: 'consent', label: 'Consent' },
-  { key: 'chief_complaint', label: 'Reason' },
-  { key: 'medications', label: 'Meds' },
-  { key: 'allergies', label: 'Allergies' },
-  { key: 'history', label: 'History' },
-  { key: 'insurance', label: 'Insurance' },
-  { key: 'emergency_contact', label: 'Contact' },
-  { key: 'recap', label: 'Recap' }
+  { key: 'verification', label: 'Verify' },
+  { key: 'visit_reason_update', label: 'Reason' },
+  { key: 'safety_updates', label: 'Safety' },
+  { key: 'relevant_history', label: 'History' },
+  { key: 'admin_followup', label: 'Admin' },
+  { key: 'prechart_summary', label: 'Pre-chart' }
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -441,24 +542,31 @@ var PHASE_DEFS = [
 // ---------------------------------------------------------------------------------------------
 
 function hasUsableValue(entry) {
-  return !!entry && entry.value !== null && entry.value !== undefined && entry.value !== '';
+  if (!entry || entry.value === null || entry.value === undefined || entry.value === '') return false;
+  if (Array.isArray(entry.value)) return entry.value.length > 0;
+  if (typeof entry.value === 'object') return Object.keys(entry.value).length > 0;
+  return true;
 }
 
-// "Cleanly resolved" = a real captured value, or an active decline — nothing left to do.
-// unable_to_capture is a defined terminal state per the PRD (no silent blank), but it still
-// represents a gap the front desk needs to close, so it does NOT count as cleanly resolved here.
-// A tool call that claims state:"captured" with no value (seen in real Gemini output — the model
-// occasionally marks a field resolved without actually recording anything) is treated the same as
-// unable_to_capture: something needs the desk, it just isn't a clean success.
-function isCleanlyResolved(entry) {
+function isConditionalAdminKey(key) {
+  return CONDITIONAL_ADMIN_KEYS[key] === true;
+}
+
+function isResolvedForProgress(entry, key) {
   if (!entry) return false;
+  if (entry.state === 'preloaded') return isConditionalAdminKey(key);
   if (entry.state === 'captured') return hasUsableValue(entry);
-  return entry.state === 'patient_declined';
+  return entry.state === 'verified' ||
+    entry.state === 'updated' ||
+    entry.state === 'patient_declined' ||
+    entry.state === 'unable_to_capture' ||
+    entry.state === 'not_applicable';
 }
 
-function needsFollowUp(entry) {
+function needsFollowUp(entry, key) {
   if (!entry) return true;
   if (entry.state === 'unable_to_capture') return true;
+  if (entry.state === 'preloaded') return !isConditionalAdminKey(key);
   if (entry.state === 'captured' && !hasUsableValue(entry)) return true;
   return false;
 }
@@ -466,41 +574,64 @@ function needsFollowUp(entry) {
 // A field has at least been "addressed" in conversation terms once it reaches any terminal state
 // (including unable_to_capture) — used for phase-strip progression, which cares about whether the
 // topic came up at all, not whether the desk still needs to follow up on it.
-function hasBeenAddressed(entry) {
-  return isCleanlyResolved(entry) || (!!entry && entry.state === 'unable_to_capture');
+function hasBeenAddressed(entry, key) {
+  return isResolvedForProgress(entry, key);
 }
 
-function classifyField(entry, required, callActive) {
-  if (entry && entry.state === 'captured' && hasUsableValue(entry)) return 'ok';
+function classifyField(entry, required, callActive, key) {
+  if (entry && entry.state === 'preloaded') return 'preload';
+  if (entry && entry.state === 'verified') return 'verified';
+  if (entry && entry.state === 'updated') return 'updated';
+  if (entry && entry.state === 'captured' && hasUsableValue(entry)) return 'captured';
   if (entry && entry.state === 'patient_declined') return 'declined';
-  if (entry && entry.state === 'unable_to_capture') return required ? 'needsdesk' : 'unable';
-  if (entry && entry.state === 'captured' && !hasUsableValue(entry)) return required ? 'needsdesk' : 'unable';
+  if (entry && entry.state === 'not_applicable') return 'na';
+  if (entry && entry.state === 'unable_to_capture') return 'needsdesk';
+  if (entry && entry.state === 'captured' && !hasUsableValue(entry)) return 'needsdesk';
   if (callActive) return 'wait';
   return required ? 'needsdesk' : 'notstarted';
 }
 
 function tagHtml(tone, required) {
-  if (tone === 'ok') return '<span class="tag ok">' + IC.check + ' Captured</span>';
+  if (tone === 'ready') return '<span class="tag ok">' + IC.check + ' Pre-chart ready</span>';
+  if (tone === 'building') return '<span class="tag wait">Building</span>';
+  if (tone === 'preload') return '<span class="tag preload">Preloaded</span>';
+  if (tone === 'verified') return '<span class="tag verified">' + IC.check + ' Verified</span>';
+  if (tone === 'updated') return '<span class="tag updated">Updated</span>';
+  if (tone === 'captured') return '<span class="tag ok">' + IC.check + ' Captured</span>';
   if (tone === 'declined') return '<span class="tag declined">Declined</span>';
-  if (tone === 'needsdesk') return '<span class="tag reqmiss">' + (required ? 'Required' : 'Optional') + ' · needs desk</span>';
-  if (tone === 'unable') return '<span class="tag declined">Unable to capture</span>';
-  if (tone === 'wait') return '<span class="tag wait">' + (required ? 'Waiting…' : 'Optional') + '</span>';
-  return '<span class="tag wait">Optional · not started</span>';
+  if (tone === 'na') return '<span class="tag na">Not applicable</span>';
+  if (tone === 'needsdesk') return '<span class="tag reqmiss">Needs desk</span>';
+  if (tone === 'wait') return '<span class="tag wait">' + (required ? 'Waiting...' : 'Optional') + '</span>';
+  return '<span class="tag wait">Not started</span>';
+}
+
+function formatFieldValue(value) {
+  if (Array.isArray(value)) return value.join('; ');
+  if (value && typeof value === 'object') return JSON.stringify(value);
+  return String(value);
 }
 
 function valueContent(entry, def, tone) {
-  if (tone === 'wait') return { html: 'Waiting for call…', empty: true };
-  if (tone === 'notstarted') return { html: '—', empty: true };
+  if (tone === 'wait') return { html: 'Waiting for call...', empty: true };
+  if (tone === 'notstarted') return { html: '-', empty: true };
   if (!hasUsableValue(entry)) {
-    if (entry && entry.state === 'captured') return { html: 'Marked captured, but no value was recorded — confirm with patient', empty: true };
+    if (entry && entry.state === 'captured') return { html: 'Marked captured, but no value was recorded - confirm with patient', empty: true };
     if (tone === 'needsdesk') return { html: "Couldn't capture on the call", empty: true };
-    if (tone === 'declined') return { html: 'Declined to share', empty: true };
-    return { html: '—', empty: true };
+    if (tone === 'declined') return { html: 'Patient declined', empty: true };
+    if (tone === 'na') return { html: 'Not applicable', empty: true };
+    return { html: '-', empty: true };
   }
-  var raw = escapeHtml(entry.value);
+  var raw = escapeHtml(formatFieldValue(entry.value));
   var val = def.mono ? '<span class="mono">' + raw + '</span>' : raw;
   var subParts = [];
-  if (def.unverified) subParts.push('self-reported · unverified');
+  if (entry.state === 'preloaded') subParts.push('clinic context');
+  if (entry.state === 'verified') subParts.push('confirmed by patient');
+  if (entry.state === 'updated') subParts.push('updated by patient');
+  if (entry.state === 'captured') subParts.push('captured on call');
+  if (entry.state === 'not_applicable') subParts.push('not applicable');
+  if (entry.lastConfirmedAt) subParts.push('last confirmed ' + entry.lastConfirmedAt);
+  if (entry.needsConfirmationReason) subParts.push(entry.needsConfirmationReason);
+  if (def.unverified && (entry.state === 'captured' || entry.state === 'updated')) subParts.push('self-reported · unverified');
   var sub = '';
   if (subParts.length) {
     var subInner = subParts.join(' · ');
@@ -509,46 +640,113 @@ function valueContent(entry, def, tone) {
   return { html: val + sub, empty: false };
 }
 
+function contextValueFor(record, key) {
+  var context = record ? record.preloaded_context || {} : {};
+  var groupNames = Object.keys(context);
+  for (var i = 0; i < groupNames.length; i++) {
+    var group = context[groupNames[i]];
+    if (!group || typeof group !== 'object') continue;
+    if (Object.prototype.hasOwnProperty.call(group, key)) return group[key];
+  }
+  if (key === 'appointment_datetime') return record ? record.appointment_datetime : undefined;
+  if (key === 'phone_number') return record ? record.phone_number : undefined;
+  return undefined;
+}
+
+function normalizeEntry(raw, fallbackState) {
+  if (!raw && raw !== '') return null;
+  if (typeof raw === 'object' && !Array.isArray(raw) && ('value' in raw || 'state' in raw)) {
+    return {
+      ...raw,
+      state: raw.state || fallbackState || 'captured'
+    };
+  }
+  return { value: raw, state: fallbackState || 'captured' };
+}
+
+function fieldEntry(record, key) {
+  if (!record) return null;
+  var fields = record.fields || {};
+  if (Object.prototype.hasOwnProperty.call(fields, key)) return normalizeEntry(fields[key], 'captured');
+  var legacyKey = LEGACY_FIELD_ALIASES[key];
+  if (legacyKey && Object.prototype.hasOwnProperty.call(fields, legacyKey)) {
+    return normalizeEntry(fields[legacyKey], 'captured');
+  }
+  var contextValue = contextValueFor(record, key);
+  if (contextValue !== undefined && contextValue !== null && contextValue !== '') {
+    return { value: contextValue, state: 'preloaded' };
+  }
+  return null;
+}
+
+function firstUsableEntry(record, keys) {
+  for (var i = 0; i < keys.length; i++) {
+    var entry = fieldEntry(record, keys[i]);
+    if (entry && hasUsableValue(entry)) return entry;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------------------------
 // DOM build (once) + paint (every poll / selection change)
 // ---------------------------------------------------------------------------------------------
 
 var groupsEl = $('#groups');
 var fieldEls = [];
+var groupNotes = {};
 var selectedCallSid = null;
 var latestRecords = [];
 var lastValues = {};
 
-function makeFieldEl(label, required) {
+function makeFieldEl(label, required, badge) {
   var el = document.createElement('div');
   el.className = 'field';
-  el.innerHTML = '<div class="flabel">' + escapeHtml(label) + '<span class="reqmark' + (required ? '' : ' opt') + '">' + (required ? 'Required' : 'Optional') + '</span></div>' +
-    '<div class="fval" data-slot>—</div><div data-tag></div>';
+  var marker = '';
+  if (badge !== false) {
+    var markerText = badge || (required ? 'Required' : 'Optional');
+    marker = '<span class="reqmark' + (required ? '' : ' opt') + '">' + escapeHtml(markerText) + '</span>';
+  }
+  el.innerHTML = '<div class="flabel">' + escapeHtml(label) + marker + '</div>' +
+    '<div class="fval" data-slot>-</div><div data-tag></div>';
   return { el: el, slot: el.querySelector('[data-slot]'), tag: el.querySelector('[data-tag]') };
 }
 
 function buildDetailDOM() {
   groupsEl.innerHTML = '';
   fieldEls = [];
+  groupNotes = {};
   GROUP_DEFS.forEach(function (g) {
     var wrap = document.createElement('div');
     wrap.className = 'group';
     wrap.innerHTML = '<h3>' + escapeHtml(g.label) + '<span class="ln"></span></h3>';
-    if (g.kind === 'consent') {
+    if (g.kind === 'verification') {
       var ce = makeFieldEl('Recording & sharing consent', true);
       wrap.appendChild(ce.el);
       fieldEls.push({ el: ce.el, slot: ce.slot, tag: ce.tag, groupKey: g.key, kind: 'consent', required: true });
-    } else if (g.kind === 'contact') {
-      var xe = makeFieldEl('Contact', true);
-      wrap.appendChild(xe.el);
-      fieldEls.push({ el: xe.el, slot: xe.slot, tag: xe.tag, groupKey: g.key, kind: 'contact', required: true, fields: g.fields });
-    } else {
       g.fields.forEach(function (key) {
         var meta = metaFor(key);
         var required = FIELD_REQUIRED[key] === true && !meta.optional;
         var fe = makeFieldEl(meta.label, required);
         wrap.appendChild(fe.el);
-        fieldEls.push({ el: fe.el, slot: fe.slot, tag: fe.tag, groupKey: g.key, kind: 'field', fieldKey: key, def: meta, required: required });
+        fieldEls.push({ el: fe.el, slot: fe.slot, tag: fe.tag, groupKey: g.key, groupKind: g.kind, kind: 'field', fieldKey: key, def: meta, required: required });
+      });
+    } else if (g.kind === 'summary') {
+      var se = makeFieldEl('Pre-chart readiness', false, 'Summary');
+      wrap.appendChild(se.el);
+      fieldEls.push({ el: se.el, slot: se.slot, tag: se.tag, groupKey: g.key, groupKind: g.kind, kind: 'summary', required: false });
+    } else {
+      if (g.kind === 'admin') {
+        var note = document.createElement('div');
+        note.className = 'group-note';
+        wrap.appendChild(note);
+        groupNotes[g.key] = note;
+      }
+      g.fields.forEach(function (key) {
+        var meta = metaFor(key);
+        var required = g.contextOnly ? false : (FIELD_REQUIRED[key] === true && !meta.optional);
+        var fe = makeFieldEl(meta.label, required, g.badge);
+        wrap.appendChild(fe.el);
+        fieldEls.push({ el: fe.el, slot: fe.slot, tag: fe.tag, groupKey: g.key, groupKind: g.kind, kind: 'field', fieldKey: key, def: meta, required: required, contextOnly: !!g.contextOnly });
       });
     }
     groupsEl.appendChild(wrap);
@@ -580,6 +778,38 @@ function setProgress(done, total) {
   $('#progbar').style.width = (total ? (done / total * 100) : 0) + '%';
 }
 
+function groupDefFor(key) {
+  for (var i = 0; i < GROUP_DEFS.length; i++) {
+    if (GROUP_DEFS[i].key === key) return GROUP_DEFS[i];
+  }
+  return null;
+}
+
+function adminVisibleKeys(record) {
+  var def = groupDefFor('admin_followup');
+  var out = [];
+  (def ? def.fields : []).forEach(function (key) {
+    var entry = fieldEntry(record, key);
+    if (!entry) {
+      out.push(key);
+      return;
+    }
+    if (entry.state !== 'preloaded') out.push(key);
+  });
+  return out;
+}
+
+function adminNeedsDeskKeys(record) {
+  if (!record || record.call_status === 'in_progress') return [];
+  return schemaFields('conditional_admin_update').filter(function (key) {
+    return needsFollowUp(fieldEntry(record, key), key);
+  });
+}
+
+function shouldShowAdminField(record, key) {
+  return adminVisibleKeys(record).indexOf(key) !== -1;
+}
+
 // A required field "needs the desk" if the call has ended (or was never a live call) and that
 // field is still unable_to_capture or entirely absent. While the call is still in progress this
 // is never counted — the patient may simply not have gotten to that question yet.
@@ -588,8 +818,8 @@ function needsDeskKeys(record) {
   var out = [];
   if (active) return out;
   SCHEMA.requiredKeys.forEach(function (key) {
-    var entry = record.fields ? record.fields[key] : null;
-    if (needsFollowUp(entry)) out.push(key);
+    var entry = fieldEntry(record, key);
+    if (needsFollowUp(entry, key)) out.push(key);
   });
   return out;
 }
@@ -597,8 +827,8 @@ function needsDeskKeys(record) {
 function resolvedRequiredCount(record) {
   var n = 0;
   SCHEMA.requiredKeys.forEach(function (key) {
-    var entry = record.fields ? record.fields[key] : null;
-    if (isCleanlyResolved(entry)) n++;
+    var entry = fieldEntry(record, key);
+    if (isResolvedForProgress(entry, key)) n++;
   });
   return n;
 }
@@ -610,15 +840,19 @@ function hasAnyData(record) {
 }
 
 function isGroupResolved(record, groupKey) {
-  if (groupKey === 'consent') return record.consent_given === true;
+  if (groupKey === 'verification' && record.consent_given !== true) return false;
+  if (groupKey === 'prechart_summary') {
+    return resolvedRequiredCount(record) === SCHEMA.requiredKeys.length && needsDeskKeys(record).length === 0;
+  }
   var def = GROUP_DEFS.filter(function (g) { return g.key === groupKey; })[0];
   if (!def) return true;
+  if (def.contextOnly) return true;
   var keys = def.fields || [];
   for (var i = 0; i < keys.length; i++) {
     var key = keys[i];
     if (FIELD_REQUIRED[key] === false) continue; // optional fields don't gate phase progress
-    var entry = record.fields ? record.fields[key] : null;
-    if (!hasBeenAddressed(entry)) return false;
+    var entry = fieldEntry(record, key);
+    if (!hasBeenAddressed(entry, key)) return false;
   }
   return true;
 }
@@ -650,10 +884,10 @@ function renderPhaseStrip(record) {
 }
 
 function renderBanners(record) {
-  var allergyEntry = record.fields ? record.fields.allergies : null;
+  var allergyEntry = firstUsableEntry(record, ['new_allergies', 'known_allergies']);
   var ab = $('#allergybanner');
-  if (allergyEntry && allergyEntry.state === 'captured' && allergyEntry.value && !isNegativeAllergy(allergyEntry.value)) {
-    $('#allergytext').textContent = String(allergyEntry.value);
+  if (allergyEntry && hasUsableValue(allergyEntry) && !isNegativeAllergy(formatFieldValue(allergyEntry.value))) {
+    $('#allergytext').textContent = formatFieldValue(allergyEntry.value);
     ab.classList.add('show');
   } else {
     ab.classList.remove('show');
@@ -671,7 +905,7 @@ function renderBanners(record) {
     notice = { lead: "Call didn't complete.", text: 'The call ended early.' + (labels1.length ? ' Needs the desk: ' + labels1.join(', ') + '.' : '') };
   } else if (record.call_status === 'completed' && missingKeys.length) {
     var labels2 = missingKeys.map(function (k) { return metaFor(k).label; });
-    notice = { lead: labels2.length > 1 ? 'Required fields need the desk:' : 'A required field needs the desk:', text: labels2.join(', ') + " couldn't be captured on the call." };
+    notice = { lead: labels2.length > 1 ? 'Required fields need the desk:' : 'A required field needs the desk:', text: labels2.join(', ') + " need front-desk follow-up before the visit." };
   }
   if (notice) {
     $('#noticelead').textContent = notice.lead;
@@ -697,7 +931,7 @@ function renderReadyFlag(record) {
   var missing = needsDeskKeys(record);
   if (missing.length === 0) {
     el.className = 'ready-flag ok';
-    el.innerHTML = IC.ready + ' Ready to check in — all required resolved';
+    el.innerHTML = IC.ready + ' Ready for pre-chart - all required resolved';
   } else {
     el.className = 'ready-flag attn';
     el.innerHTML = IC.warn + ' ' + missing.length + ' required field' + (missing.length > 1 ? 's' : '') + ' need' + (missing.length > 1 ? '' : 's') + ' the desk';
@@ -716,12 +950,66 @@ function renderExtraFields(record) {
   extra.style.display = '';
   var html = '<h3>Additional information<span class="ln"></span></h3>';
   leftover.forEach(function (key) {
-    var entry = fields[key];
-    var val = entry && entry.value !== null && entry.value !== undefined ? escapeHtml(entry.value) : '—';
+    var entry = normalizeEntry(fields[key], 'captured');
+    var val = entry && entry.value !== null && entry.value !== undefined ? escapeHtml(formatFieldValue(entry.value)) : '-';
     html += '<div class="field filled"><div class="flabel">' + escapeHtml(titleCase(key)) + '</div>' +
-      '<div class="fval">' + val + '</div><div>' + tagHtml(entry ? classifyField(entry, false, false) : 'notstarted', false) + '</div></div>';
+      '<div class="fval">' + val + '</div><div>' + tagHtml(entry ? classifyField(entry, false, false, key) : 'notstarted', false) + '</div></div>';
   });
   extra.innerHTML = html;
+}
+
+function renderAdminNote(record) {
+  var note = groupNotes.admin_followup;
+  if (!note) return;
+  var visible = adminVisibleKeys(record);
+  var needs = adminNeedsDeskKeys(record);
+  if (!visible.length) {
+    note.textContent = 'No admin follow-up flagged for insurance or contact.';
+  } else if (needs.length) {
+    note.textContent = needs.length + ' insurance/contact item' + (needs.length > 1 ? 's need' : ' needs') + ' desk follow-up.';
+  } else {
+    note.textContent = 'Insurance/contact updates addressed on the call.';
+  }
+}
+
+function summaryContent(record, callActive) {
+  var resolved = resolvedRequiredCount(record);
+  var total = SCHEMA.requiredKeys.length;
+  var needs = needsDeskKeys(record);
+  var adminNeeds = adminNeedsDeskKeys(record);
+  if (callActive) {
+    return {
+      tone: 'building',
+      html: 'Pre-chart building during call<span class="sub">' + resolved + '/' + total + ' required items resolved so far</span>',
+      empty: false
+    };
+  }
+  if (!hasAnyData(record)) {
+    return {
+      tone: 'wait',
+      html: 'Waiting for intake call',
+      empty: true
+    };
+  }
+  if (!needs.length) {
+    var cleanSub = resolved + '/' + total + ' required items resolved';
+    if (record.sms_sent) cleanSub += ' · confirmation SMS sent';
+    if (record.email_sent) cleanSub += ' · confirmation email sent';
+    return {
+      tone: 'ready',
+      html: 'Ready for specialist pre-chart<span class="sub">' + escapeHtml(cleanSub) + '</span>',
+      empty: false
+    };
+  }
+  var labels = needs.slice(0, 5).map(function (key) { return metaFor(key).label; });
+  var follow = labels.join(', ');
+  if (needs.length > labels.length) follow += ', +' + (needs.length - labels.length) + ' more';
+  var adminText = adminNeeds.length ? ' Includes insurance/contact follow-up.' : '';
+  return {
+    tone: 'needsdesk',
+    html: 'Desk follow-up needed before pre-chart<span class="sub">' + escapeHtml(follow + '.' + adminText) + '</span>',
+    empty: false
+  };
 }
 
 function paintFieldEl(fe, record, callActive) {
@@ -731,45 +1019,35 @@ function paintFieldEl(fe, record, callActive) {
     var serialized = JSON.stringify([record.consent_given, record.consent_logged_at]);
     changed = trackChange(record.call_sid, '__consent__', serialized);
     if (record.consent_given === true) {
-      tone = 'ok';
+      tone = 'verified';
       contentHtml = 'Given<span class="sub">' + escapeHtml(formatTime(record.consent_logged_at)) + ' · verbal</span>';
       empty = false;
     } else if (callActive) {
-      tone = 'wait'; contentHtml = 'Waiting for call…'; empty = true;
+      tone = 'wait'; contentHtml = 'Waiting for call...'; empty = true;
     } else {
       tone = 'needsdesk'; contentHtml = 'Not captured'; empty = true;
     }
-  } else if (fe.kind === 'contact') {
-    required = true;
-    var nameE = record.fields ? record.fields.emergency_contact_name : null;
-    var relE = record.fields ? record.fields.emergency_contact_relationship : null;
-    var phoneE = record.fields ? record.fields.emergency_contact_phone : null;
-    changed = trackChange(record.call_sid, '__contact__', JSON.stringify([nameE, relE, phoneE]));
-    var allCaptured = hasUsableValue(nameE) && hasUsableValue(relE) && hasUsableValue(phoneE);
-    var allDeclined = [nameE, relE, phoneE].every(function (e) { return e && e.state === 'patient_declined'; });
-    var anyCaptured = [nameE, relE, phoneE].some(function (e) { return hasUsableValue(e); });
-    if (allCaptured) {
-      tone = 'ok'; empty = false;
-      contentHtml = escapeHtml(nameE.value) + '<span class="sub">' + escapeHtml(relE.value) + ' · <span class="mono">' + escapeHtml(phoneE.value) + '</span></span>';
-    } else if (allDeclined) {
-      tone = 'declined'; empty = true; contentHtml = 'Declined to share';
-    } else if (anyCaptured) {
-      tone = 'needsdesk'; empty = false;
-      var got = [nameE, relE, phoneE].filter(function (e) { return hasUsableValue(e); }).map(function (e) { return e.value; }).join(' · ');
-      contentHtml = escapeHtml(got) + '<span class="sub">Some contact details still needed</span>';
-    } else if (callActive) {
-      tone = 'wait'; empty = true; contentHtml = 'Waiting for call…';
-    } else {
-      tone = 'needsdesk'; empty = true; contentHtml = "Couldn't capture on the call";
-    }
+  } else if (fe.kind === 'summary') {
+    required = false;
+    var summary = summaryContent(record, callActive);
+    changed = trackChange(record.call_sid, '__summary__', JSON.stringify([record.call_status, resolvedRequiredCount(record), needsDeskKeys(record)]));
+    tone = summary.tone;
+    contentHtml = summary.html;
+    empty = summary.empty;
   } else {
     required = fe.required;
-    var entry = record.fields ? record.fields[fe.fieldKey] : null;
+    if (fe.groupKind === 'admin' && !shouldShowAdminField(record, fe.fieldKey)) {
+      fe.el.style.display = 'none';
+      return;
+    }
+    fe.el.style.display = '';
+    var entry = fieldEntry(record, fe.fieldKey);
     changed = trackChange(record.call_sid, fe.fieldKey, JSON.stringify(entry || null));
-    tone = classifyField(entry, required, callActive);
+    tone = classifyField(entry, required, callActive, fe.fieldKey);
     var vc = valueContent(entry, fe.def, tone);
     contentHtml = vc.html; empty = vc.empty;
   }
+  fe.el.style.display = '';
   fe.slot.classList.toggle('empty', empty);
   fe.slot.innerHTML = contentHtml;
   fe.tag.innerHTML = tagHtml(tone, required);
@@ -799,21 +1077,22 @@ function updateCallChip(record) {
 }
 
 function displayName(record) {
-  var entry = record.fields ? record.fields.full_name : null;
-  if (entry && entry.state === 'captured' && entry.value) return String(entry.value);
-  return formatPhone(record.phone_number) || 'Unknown caller';
+  var entry = fieldEntry(record, 'full_name');
+  if (entry && hasUsableValue(entry)) return formatFieldValue(entry.value);
+  var phoneEntry = fieldEntry(record, 'phone_number');
+  return formatPhone(phoneEntry && phoneEntry.value ? formatFieldValue(phoneEntry.value) : record.phone_number) || 'Unknown caller';
 }
 
 function displayReason(record) {
-  var entry = record.fields ? record.fields.chief_complaint_text : null;
-  if (entry && entry.state === 'captured' && entry.value) {
-    var v = String(entry.value);
-    return v.length > 42 ? v.slice(0, 39) + '…' : v;
+  var entry = firstUsableEntry(record, ['patient_stated_reason', 'booking_reason']);
+  if (entry && hasUsableValue(entry)) {
+    var v = formatFieldValue(entry.value);
+    return v.length > 42 ? v.slice(0, 39) + '...' : v;
   }
-  if (record.call_status === 'in_progress') return 'Intake in progress…';
+  if (record.call_status === 'in_progress') return 'Intake in progress...';
   if (record.call_status === 'voicemail') return 'Left voicemail';
   if (record.call_status === 'dropped') return 'Call dropped early';
-  if (record.call_status === 'emergency_escalated') return 'Emergency — told to call 911';
+  if (record.call_status === 'emergency_escalated') return 'Emergency - told to call 911';
   return 'Pre-visit intake';
 }
 
@@ -827,26 +1106,36 @@ function paintDetail(record) {
     $('#allergybanner').classList.remove('show'); $('#noticebanner').classList.remove('show');
     setProgress(0, SCHEMA.requiredKeys.length);
     fieldEls.forEach(function (fe) {
-      fe.slot.classList.add('empty'); fe.slot.textContent = 'Waiting for call…';
-      fe.tag.innerHTML = tagHtml('wait', fe.required);
+      if (fe.groupKind === 'admin') {
+        fe.el.style.display = 'none';
+        return;
+      }
+      fe.el.style.display = '';
+      fe.slot.classList.add('empty'); fe.slot.textContent = 'Waiting for call...';
+      fe.tag.innerHTML = tagHtml('wait', fe.required || fe.kind === 'summary');
       fe.el.classList.remove('filled'); fe.el.classList.add('pending');
     });
+    if (groupNotes.admin_followup) groupNotes.admin_followup.textContent = 'No admin follow-up flagged for insurance or contact.';
     $('#extra-group').style.display = 'none';
     updateCallChip(null);
-    $('#ctrlmsg').innerHTML = 'No intake calls yet — place a call to see it appear here';
+    $('#ctrlmsg').innerHTML = 'No intake calls yet - place a call to see it appear here';
     return;
   }
   var callActive = record.call_status === 'in_progress';
   $('#pname').textContent = displayName(record);
-  $('#pdob').textContent = (record.fields && record.fields.date_of_birth && record.fields.date_of_birth.value) || '—';
-  $('#pappt').textContent = record.appointment_datetime || '—';
-  $('#pphone').textContent = formatPhone(record.phone_number) || '—';
+  var dobEntry = fieldEntry(record, 'date_of_birth');
+  var apptEntry = fieldEntry(record, 'appointment_datetime');
+  var phoneEntry = fieldEntry(record, 'phone_number');
+  $('#pdob').textContent = dobEntry && hasUsableValue(dobEntry) ? formatFieldValue(dobEntry.value) : '—';
+  $('#pappt').textContent = apptEntry && hasUsableValue(apptEntry) ? formatFieldValue(apptEntry.value) : (record.appointment_datetime || '—');
+  $('#pphone').textContent = formatPhone(phoneEntry && hasUsableValue(phoneEntry) ? formatFieldValue(phoneEntry.value) : record.phone_number) || '—';
 
   setProgress(resolvedRequiredCount(record), SCHEMA.requiredKeys.length);
   renderReadyFlag(record);
   renderPhaseStrip(record);
   renderBanners(record);
   renderExtraFields(record);
+  renderAdminNote(record);
   fieldEls.forEach(function (fe) { paintFieldEl(fe, record, callActive); });
   updateCallChip(record);
 

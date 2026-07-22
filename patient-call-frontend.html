@@ -122,6 +122,10 @@
   .tag{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;font-size:10.5px;font-weight:600;letter-spacing:.02em;white-space:nowrap;align-self:center}
   .tag svg{width:11px;height:11px}
   .tag.ok{background:var(--ready-soft);color:var(--ready)}
+  .tag.preload{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line)}
+  .tag.verified{background:var(--ready-soft);color:var(--ready)}
+  .tag.updated{background:var(--teal-soft);color:var(--teal-deep)}
+  .tag.na{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line)}
   .tag.declined{background:var(--surface-2);color:var(--ink-3);border:1px solid var(--line)}
   .tag.confirm{background:var(--attn-soft);color:var(--attn)}
   .tag.wait{background:var(--surface-2);color:var(--ink-3)}
@@ -194,7 +198,7 @@
           </div>
           <div class="progress-card">
             <div class="num"><span id="doneN">0</span><span class="of" id="totN">/0</span></div>
-            <div class="lbl">Required captured</div>
+            <div class="lbl">Required resolved</div>
             <div class="bar"><i id="progbar"></i></div>
           </div>
         </div>
@@ -226,12 +230,12 @@
 </div>
 
 <script>
-const PHASES = ["Consent","Reason","Meds","Allergies","History","Insurance","Contact","Recap"];
+const PHASES = ["Verify","Reason","Safety","History","Admin","Pre-chart"];
 
-/* req:1 => REQUIRED (critical, blocks check-in). No req => optional. */
+/* req:1 => REQUIRED for pre-chart readiness. No req => optional or context. */
 const ROSTER = [
   {id:"maria",  time:"1:40", name:"Maria Alvarez", rsn:"Palpitations", force:"live"},
-  {id:"ken",    time:"2:20", name:"Ken Boyd",      rsn:"Follow-up · insurance ID missing"},
+  {id:"ken",    time:"2:20", name:"Ken Boyd",      rsn:"Follow-up · admin follow-up"},
   {id:"priya",  time:"3:00", name:"Priya Raman",   rsn:"Chest pain · call didn’t connect"},
   {id:"louis",  time:"1:10", name:"Louis Tran",    rsn:"Medication review"},
   {id:"ada",    time:"1:30", name:"Ada Nwosu",     rsn:"Palpitations"},
@@ -258,26 +262,26 @@ const RECORDS = {
       {grp:"Insurance", label:"Payer", val:"Aetna", sub:"self-reported · unverified", unverif:1, state:"ok", req:1, phase:5},
       {grp:"Insurance", label:"Member ID", val:"W1234-56789", mono:1, unverif:1, state:"ok", req:1, phase:5},
       {grp:"Insurance", label:"Group number", val:"Couldn’t capture on the call", state:"confirm", phase:5},
-      {grp:"Emergency contact", label:"Contact", val:"Dana Alvarez", sub:"Sister · (917) 555-0198", state:"ok", req:1, phase:6},
+      {grp:"Contact update", label:"Best callback", val:"Mobile phone confirmed", sub:"SMS confirmation OK", state:"ok", phase:5},
     ]
   },
   ken:{
     meta:{dob:"Jul 22, 1968", appt:"Thu 2:20 PM · Dr. Okafor", phone:"(917) 555-0176"},
     chip:{msg:"Call complete · 2:06 PM"},
-    notice:{lead:"A required field needs the desk:", text:"member ID couldn’t be captured on the call — grab the insurance card at check-in."},
+    notice:{lead:"A required field needs the desk:", text:"member ID couldn't be captured on the call - front-desk follow-up before the visit."},
     fields:[
       {grp:"Identity", label:"Full name", val:"Ken Boyd", state:"ok", req:1},
       {grp:"Identity", label:"Date of birth", val:"Jul 22, 1968", mono:1, state:"ok", req:1},
       {grp:"Identity", label:"Preferred language", val:"English", state:"ok"},
       {grp:"Consent", label:"Recording & sharing consent", val:"Given", sub:"2:02 PM · verbal", state:"ok", req:1},
-      {grp:"Reason for visit", label:"In the patient’s words", val:"“Just my regular blood-pressure check-in.”", sub:"Mapped: hypertension follow-up", state:"ok", req:1},
+      {grp:"Reason for visit", label:"In the patient’s words", val:"“Just my regular blood-pressure follow-up.”", sub:"Mapped: hypertension follow-up", state:"ok", req:1},
       {grp:"Medications", label:"Current medications", val:"Lisinopril", sub:"20 mg · daily", state:"readback", req:1},
       {grp:"Medications", label:"", val:"Atorvastatin", sub:"40 mg · nightly", state:"readback"},
       {grp:"Allergies", label:"Drug allergies", val:"No known drug allergies", state:"ok", req:1},
       {grp:"History", label:"Ongoing conditions", val:"Hypertension, Type 2 diabetes", state:"ok", req:1},
       {grp:"Insurance", label:"Payer", val:"UnitedHealthcare", sub:"self-reported · unverified", unverif:1, state:"ok", req:1},
       {grp:"Insurance", label:"Member ID", val:"Couldn’t capture on the call", state:"confirm", req:1},
-      {grp:"Emergency contact", label:"Contact", val:"Marie Boyd", sub:"Spouse · (917) 555-0177", state:"ok", req:1},
+      {grp:"Contact update", label:"Best callback", val:"Mobile phone confirmed", sub:"SMS confirmation OK", state:"ok"},
     ]
   },
   priya:{
@@ -294,7 +298,7 @@ const RECORDS = {
       {grp:"History", label:"Ongoing conditions", val:"Not captured", state:"wait", req:1},
       {grp:"Insurance", label:"Payer", val:"Not captured", state:"wait", req:1},
       {grp:"Insurance", label:"Member ID", val:"Not captured", state:"wait", req:1},
-      {grp:"Emergency contact", label:"Contact", val:"Not captured", state:"wait", req:1},
+      {grp:"Contact update", label:"Best callback", val:"Not captured", state:"wait"},
     ]
   },
   louis:{
@@ -313,7 +317,7 @@ const RECORDS = {
       {grp:"History", label:"Ongoing conditions", val:"Atrial fibrillation, Type 2 diabetes", state:"ok", req:1},
       {grp:"Insurance", label:"Payer", val:"Medicare", sub:"self-reported · unverified", unverif:1, state:"ok", req:1},
       {grp:"Insurance", label:"Member ID", val:"1EG4-TE5-MK72", mono:1, unverif:1, state:"ok", req:1},
-      {grp:"Emergency contact", label:"Contact", val:"Tom Tran", sub:"Son · (917) 555-0188", state:"ok", req:1},
+      {grp:"Contact update", label:"Best callback", val:"Mobile phone confirmed", sub:"SMS confirmation OK", state:"ok"},
     ]
   },
   ada:{
@@ -331,7 +335,7 @@ const RECORDS = {
       {grp:"History", label:"Social history", val:"Declined", state:"declined"},
       {grp:"Insurance", label:"Payer", val:"Cigna", sub:"self-reported · unverified", unverif:1, state:"ok", req:1},
       {grp:"Insurance", label:"Member ID", val:"U8842-11907", mono:1, unverif:1, state:"ok", req:1},
-      {grp:"Emergency contact", label:"Contact", val:"Chidi Nwosu", sub:"Brother · (917) 555-0156", state:"ok", req:1},
+      {grp:"Contact update", label:"Best callback", val:"Mobile phone confirmed", sub:"SMS confirmation OK", state:"ok"},
     ]
   },
   sam:{
@@ -348,7 +352,7 @@ const RECORDS = {
       {grp:"History", label:"Ongoing conditions", val:"Coronary artery disease", state:"ok", req:1},
       {grp:"Insurance", label:"Payer", val:"Aetna", sub:"self-reported · unverified", unverif:1, state:"ok", req:1},
       {grp:"Insurance", label:"Member ID", val:"W5521-88320", mono:1, unverif:1, state:"ok", req:1},
-      {grp:"Emergency contact", label:"Contact", val:"Rae Feldman", sub:"Spouse · (917) 555-0165", state:"ok", req:1},
+      {grp:"Contact update", label:"Best callback", val:"Mobile phone confirmed", sub:"SMS confirmation OK", state:"ok"},
     ]
   },
   rosa:{
@@ -366,13 +370,13 @@ const RECORDS = {
       {grp:"History", label:"Social history", val:"Non-smoker · no alcohol", state:"ok"},
       {grp:"Insurance", label:"Payer", val:"Fidelis Care", sub:"self-reported · unverified", unverif:1, state:"ok", req:1},
       {grp:"Insurance", label:"Member ID", val:"F3390-27714", mono:1, unverif:1, state:"ok", req:1},
-      {grp:"Emergency contact", label:"Contact", val:"Miguel Diaz", sub:"Brother · (917) 555-0134", state:"ok", req:1},
+      {grp:"Contact update", label:"Best callback", val:"Mobile phone confirmed", sub:"SMS confirmation OK", state:"ok"},
     ]
   },
   omar:{
     meta:{dob:"Dec 1, 1960", appt:"Thu 3:20 PM · Dr. Okafor", phone:"(917) 555-0190"},
     chip:{msg:"Not started"},
-    notice:{lead:"Intake not started.", text:"Call is scheduled for 2:50 PM, ahead of the 3:20 appointment. Required fields will be captured then."},
+    notice:{lead:"Intake not started.", text:"Call is scheduled for 2:50 PM, ahead of the 3:20 appointment. Required fields will be resolved then."},
     fields:[
       {grp:"Identity", label:"Full name", val:"Omar Haddad", sub:"from booking", state:"ok", req:1},
       {grp:"Identity", label:"Date of birth", val:"Dec 1, 1960", mono:1, sub:"from booking", state:"ok", req:1},
@@ -383,7 +387,7 @@ const RECORDS = {
       {grp:"History", label:"Ongoing conditions", val:"Not started", state:"wait", req:1},
       {grp:"Insurance", label:"Payer", val:"Not started", state:"wait", req:1},
       {grp:"Insurance", label:"Member ID", val:"Not started", state:"wait", req:1},
-      {grp:"Emergency contact", label:"Contact", val:"Not started", state:"wait", req:1},
+      {grp:"Contact update", label:"Best callback", val:"Not started", state:"wait"},
     ]
   },
 };
@@ -398,35 +402,125 @@ const $ = s => document.querySelector(s);
 const groupsEl = $("#groups");
 let fieldEls=[], current=null, mariaDone=false, running=false, timers=[];
 
-const cap = f => f.state==="ok"||f.state==="readback";
-const reqTotal = rec => rec.fields.filter(f=>f.req).length;
-const reqDone  = rec => rec.fields.filter(f=>f.req&&cap(f)).length;
-const reqMissing = rec => reqTotal(rec)-reqDone(rec);
+const RESOLVED_STATES = new Set(["verified","updated","captured","patient_declined","unable_to_capture","not_applicable"]);
+const cap = f => RESOLVED_STATES.has(f.state)||f.state==="ok"||f.state==="readback";
+const callUnreached = rec => /couldn.?t reach|voicemail/i.test((rec&&rec.chip&&rec.chip.msg)||"");
+const callNotStarted = rec => /not started/i.test((rec&&rec.chip&&rec.chip.msg)||"");
+const waitLabel = rec => callUnreached(rec) ? "Not captured" : "Not started";
+
+function stateFor(f, group, rec){
+  if(f.state==="preloaded"||RESOLVED_STATES.has(f.state)||f.state==="wait") return f.state==="wait"&&callUnreached(rec)?"unable_to_capture":f.state;
+  if(f.state==="confirm") return "unable_to_capture";
+  if(f.state==="declined") return "patient_declined";
+  if(f.state==="readback") return "updated";
+  if(f.state==="ok"){
+    if(group==="Verification") return "verified";
+    if(group==="Visit reason update"||group==="Safety updates"||group==="Relevant history") return "updated";
+    return "captured";
+  }
+  return "captured";
+}
+function contextFields(rec, id){
+  const r=ROSTER.find(x=>x.id===id)||{};
+  const name=r.name||$("#pname").textContent||"Patient";
+  const appt=rec.meta.appt.split(" · ");
+  return [
+    {grp:"Known clinic context", label:"Patient", val:name, sub:`DOB ${rec.meta.dob} · ${rec.meta.phone}`, state:"preloaded"},
+    {grp:"Known clinic context", label:"Appointment", val:appt[0]||rec.meta.appt, sub:(appt[1]||"Riverside Cardiology"), state:"preloaded"},
+    {grp:"Known clinic context", label:"Clinic / specialist", val:"Riverside Cardiology", sub:appt[1]||"Specialist visit", state:"preloaded"},
+    {grp:"Known clinic context", label:"Booking reason", val:r.rsn&&r.rsn.indexOf("admin follow-up")<0?r.rsn:"Follow-up", sub:"from scheduling context", state:"preloaded"}
+  ];
+}
+function normalizeField(f, rec){
+  if(f.grp==="Contact update") return null;
+  let grp=f.grp, label=f.label, phase=f.phase, req=f.req;
+  if(grp==="Identity"||grp==="Consent"){ grp="Verification"; phase=0; req=1; }
+  if(grp==="Consent") label="Recording & sharing disclosure";
+  if(grp==="Reason for visit"){ grp="Visit reason update"; label="Patient's words"; phase=1; req=1; }
+  if(grp==="Medications"||grp==="Allergies"){ grp="Safety updates"; phase=2; req=1; }
+  if(grp==="History"){ grp="Relevant history"; phase=3; req=label==="Social history"?0:1; }
+  if(grp==="Insurance") return null;
+  const state=stateFor(f, grp, rec);
+  return {...f, grp, label, phase, req, state};
+}
+function supplementState(rec, group){
+  if(callNotStarted(rec)) return "wait";
+  if(callUnreached(rec)) return "unable_to_capture";
+  return group==="Admin follow-up" ? "not_applicable" : "captured";
+}
+function displayFields(rec, id=current){
+  const out=contextFields(rec,id);
+  const admin=[];
+  let reason=null, hasMeds=false, hasAllergies=false, hasHistory=false;
+  rec.fields.forEach(f=>{
+    if(f.grp==="Insurance"){
+      const state=stateFor(f,"Admin follow-up",rec);
+      if(state==="unable_to_capture"){
+        admin.push({...f, grp:"Admin follow-up", label:f.label==="Payer"?"Insurance payer":f.label, state, req:1, phase:4});
+      }
+      return;
+    }
+    const mapped=normalizeField(f,rec);
+    if(!mapped) return;
+    if(mapped.grp==="Visit reason update") reason=mapped;
+    if(mapped.grp==="Safety updates"&&/medication/i.test(mapped.label)) hasMeds=true;
+    if(mapped.grp==="Safety updates"&&/allerg/i.test(mapped.label)) hasAllergies=true;
+    if(mapped.grp==="Relevant history") hasHistory=true;
+    out.push(mapped);
+  });
+  const blocked=callUnreached(rec), waiting=callNotStarted(rec);
+  if(reason){
+    const state=blocked?"unable_to_capture":waiting?"wait":"captured";
+    const cat=(reason.sub||"Mapped: cardiology follow-up").replace(/^Mapped:\s*/,"");
+    out.push({grp:"Visit reason update", label:"Structured category", val:state==="wait"?waitLabel(rec):cat, state, req:1, phase:1});
+    out.push({grp:"Visit reason update", label:"Changes since booking", val:state==="wait"?waitLabel(rec):(current==="maria"?"More noticeable during stress; no active emergency symptoms reported":"No major change since booking reported"), state:state==="captured"?"updated":state, req:1, phase:1});
+    out.push({grp:"Visit reason update", label:"Visit goal", val:state==="wait"?waitLabel(rec):"Make sure the specialist reviews this before the visit", state, req:1, phase:1});
+  }
+  if(hasMeds) out.push({grp:"Safety updates", label:"Medication changes", val:blocked||waiting?waitLabel(rec):"Medication list reviewed for additions/removals", state:blocked?"unable_to_capture":waiting?"wait":"updated", req:1, phase:2});
+  if(hasAllergies) out.push({grp:"Safety updates", label:"New allergies", val:blocked||waiting?waitLabel(rec):"No new allergies reported", state:blocked?"unable_to_capture":waiting?"wait":"not_applicable", req:1, phase:2});
+  if(hasHistory) {
+    out.push({grp:"Relevant history", label:"Relevant events / procedures", val:blocked||waiting?waitLabel(rec):"No new visit-relevant events reported", state:blocked?"unable_to_capture":waiting?"wait":"not_applicable", req:1, phase:3});
+    out.push({grp:"Relevant history", label:"Questions for specialist", val:blocked||waiting?waitLabel(rec):(current==="maria"?"Wants to know if stress could be causing the fluttering":"No pre-visit questions added"), state:blocked?"unable_to_capture":waiting?"wait":"captured", phase:3});
+  }
+  if(admin.length) out.push(...admin);
+  else out.push({grp:"Admin follow-up", label:"Insurance/contact update", val:waiting?waitLabel(rec):"No admin follow-up flagged for insurance or contact.", state:waiting?"wait":"not_applicable", phase:4});
+  out.push({grp:"Pre-chart summary", label:"Pre-chart readiness", val:blocked?"Desk follow-up needed before pre-chart":waiting?"Waiting for intake call":"Ready for specialist pre-chart", sub:blocked?"Call did not resolve required fields":"Patient-facing intake items resolved", state:blocked?"unable_to_capture":waiting?"wait":"captured", phase:5});
+  return out;
+}
+const reqTotal = rec => displayFields(rec).filter(f=>f.req).length;
+const reqDone  = rec => displayFields(rec).filter(f=>f.req&&cap(f)).length;
+const reqNeedsDesk = rec => displayFields(rec).filter(f=>f.req&&f.state==="unable_to_capture").length;
+const reqMissing = rec => displayFields(rec).filter(f=>f.req&&!cap(f)).length;
 
 function tagFor(f){
   const req=!!f.req;
-  if(f.state==="ok")       return `<span class="tag ok">${IC.check} Captured</span>`;
-  if(f.state==="readback") return `<span class="tag ok">${IC.check} Read back</span>`;
-  if(f.state==="confirm")  return req?`<span class="tag reqmiss">Required · confirm at desk</span>`:`<span class="tag declined">Optional · add at desk</span>`;
-  if(f.state==="declined") return req?`<span class="tag reqmiss">Required · needs desk</span>`:`<span class="tag declined">Declined</span>`;
-  return req?`<span class="tag reqmiss">Required · not captured</span>`:`<span class="tag wait">Optional · not started</span>`;
+  if(f.state==="preloaded") return `<span class="tag preload">Preloaded</span>`;
+  if(f.state==="verified")  return `<span class="tag verified">${IC.check} Verified</span>`;
+  if(f.state==="updated")   return `<span class="tag updated">Updated</span>`;
+  if(f.state==="captured")  return `<span class="tag ok">${IC.check} Captured</span>`;
+  if(f.state==="patient_declined") return `<span class="tag declined">Declined</span>`;
+  if(f.state==="not_applicable") return `<span class="tag na">Not applicable</span>`;
+  if(f.state==="unable_to_capture") return req?`<span class="tag reqmiss">Needs desk</span>`:`<span class="tag confirm">Desk follow-up</span>`;
+  return req?`<span class="tag wait">Waiting...</span>`:`<span class="tag wait">Optional</span>`;
 }
 function reqMark(f){
   if(f.label==="") return "";
+  if(f.state==="preloaded") return `<span class="reqmark opt">Context</span>`;
   return f.req?`<span class="reqmark">Required</span>`:`<span class="reqmark opt">Optional</span>`;
 }
 
 function buildDOM(rec){
   groupsEl.innerHTML=""; fieldEls=[];
-  const groups=[...new Set(rec.fields.map(f=>f.grp))];
+  const fields=displayFields(rec);
+  const groups=[...new Set(fields.map(f=>f.grp))];
   groups.forEach(g=>{
     const wrap=document.createElement("div"); wrap.className="group";
     wrap.innerHTML=`<h3>${g}<span class="ln"></span></h3>`;
-    rec.fields.filter(f=>f.grp===g).forEach(f=>{
+    fields.filter(f=>f.grp===g).forEach(f=>{
       const el=document.createElement("div"); el.className="field";
       el.innerHTML=(f.label?`<div class="flabel">${f.label}${reqMark(f)}</div>`:"")+
         `<div class="fval" data-slot>—</div><div data-tag></div>`+
-        (f.state==="confirm"?`<button class="fixbtn" data-fix>${IC.pen} Add at desk</button>`:"");
+        (f.state==="unable_to_capture"?`<button class="fixbtn" data-fix>${IC.pen} Desk follow-up</button>`:"");
       wrap.appendChild(el);
       fieldEls.push({el,f,slot:el.querySelector("[data-slot]"),tag:el.querySelector("[data-tag]")});
     });
@@ -445,16 +539,17 @@ function paintField(fe){
 function emptyField(fe){
   fe.el.classList.remove("filled"); fe.el.classList.add("pending");
   fe.slot.classList.add("empty"); fe.slot.textContent="Waiting for call…";
-  fe.tag.innerHTML=`<span class="tag wait">Not started</span>`;
+  fe.tag.innerHTML=`<span class="tag wait">Waiting...</span>`;
 }
 function setProgress(done,total){ $("#doneN").textContent=done; $("#totN").textContent="/"+total; $("#progbar").style.width=(total?done/total*100:0)+"%"; }
 
 function setReadyFlag(rec, mode){
   const el=$("#readyflag");
   if(mode==="waiting"){ el.className="ready-flag neutral"; el.textContent="Waiting for call"; return; }
-  const miss=reqMissing(rec);
-  if(miss===0){ el.className="ready-flag ok"; el.innerHTML=`${IC.ready} Ready to check in — all required captured`; }
-  else{ el.className="ready-flag attn"; el.innerHTML=`${IC.warn} ${miss} required field${miss>1?"s":""} need${miss>1?"":"s"} the desk`; }
+  const desk=reqNeedsDesk(rec), miss=reqMissing(rec);
+  if(desk===0&&miss===0){ el.className="ready-flag ok"; el.innerHTML=`${IC.ready} Ready for pre-chart - all required resolved`; }
+  else if(desk>0){ el.className="ready-flag attn"; el.innerHTML=`${IC.warn} ${desk} required field${desk>1?"s":""} need${desk>1?"":"s"} the desk`; }
+  else{ el.className="ready-flag neutral"; el.textContent=`Pre-chart building - ${reqDone(rec)}/${reqTotal(rec)} required resolved`; }
 }
 function setBanners(rec){
   const al=rec.fields.find(f=>f.allergy&&cap(f));
@@ -467,7 +562,7 @@ function setBanners(rec){
 function statusOf(rec, id){
   const forced=ROSTER.find(r=>r.id===id).force;
   if(forced) return forced;
-  return reqMissing(rec)>0 ? "attn" : "ready";
+  return reqNeedsDesk(rec)>0 ? "attn" : "ready";
 }
 
 function selectPatient(id){
@@ -480,14 +575,14 @@ function selectPatient(id){
   buildDOM(rec);
   const liveEmpty=(id==="maria"&&!mariaDone);
   if(liveEmpty){
-    fieldEls.forEach(emptyField);
+    fieldEls.forEach(fe=>fe.f.state==="preloaded"?paintField(fe):emptyField(fe));
     setProgress(0, reqTotal(rec)); setReadyFlag(rec,"waiting");
     $("#allergybanner").classList.remove("show"); $("#noticebanner").classList.remove("show");
     $("#callchip").classList.remove("on"); $("#callmsg").textContent="Incoming call ready";
     $("#ctrlmsg").innerHTML="<b>Maria Alvarez</b> · ready to receive call";
   } else {
     fieldEls.forEach(paintField);
-    setProgress(reqDone(rec), reqTotal(rec)); setReadyFlag(rec); setBanners(rec);
+    setProgress(reqDone(rec), reqTotal(rec)); setReadyFlag(rec, statusOf(rec,id)==="wait"?"waiting":undefined); setBanners(rec);
     $("#callchip").classList.remove("on"); $("#callmsg").textContent=rec.chip.msg;
     const miss=reqMissing(rec);
     let msg=`<b>${ROSTER.find(r=>r.id===id).name}</b> · ${reqDone(rec)}/${reqTotal(rec)} required`;
@@ -507,7 +602,7 @@ function buildRoster(){
       <span class="who"><span class="nm">${r.name}</span><br><span class="rsn">${r.rsn}</span></span>
       <span class="stat">${pillFor(r.status)}</span></button>`;
   list.innerHTML=`<div class="sectlabel">Needs attention</div>`+attn.map(row).join("")+
-                 `<div class="sectlabel">Ready for check-in</div>`+rest.map(row).join("");
+                 `<div class="sectlabel">Ready for pre-chart</div>`+rest.map(row).join("");
   list.querySelectorAll(".prow").forEach(b=>b.addEventListener("click",()=>selectPatient(b.dataset.id)));
   const nAttn=attn.filter(r=>r.status==="attn").length;
   const nReady=rest.filter(r=>r.status==="ready").length;
@@ -530,7 +625,6 @@ async function runSim(){
   let done=0; const total=reqTotal(rec);
   for(let p=0;p<PHASES.length;p++){
     setPhaseStrip(p);
-    if(p===PHASES.length-1){ await wait(700); break; }
     const inPhase=fieldEls.filter(x=>x.f.phase===p);
     await wait(p===0?500:420);
     for(const fe of inPhase){
