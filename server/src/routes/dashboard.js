@@ -47,7 +47,7 @@ router.get('/api/records', async (req, res) => {
     const records = await listRecentRecords(20);
     const withCompleteness = records.map((r) => ({
       ...r,
-      completeness: computeCompleteness(r.fields),
+      completeness: computeCompleteness(r.fields, r.preloaded_context),
     }));
     res.json({ records: withCompleteness });
   } catch (err) {
@@ -64,7 +64,7 @@ router.get('/api/records/:callSid', async (req, res) => {
       res.status(404).json({ error: 'Record not found' });
       return;
     }
-    res.json({ record: { ...record, completeness: computeCompleteness(record.fields) } });
+    res.json({ record: { ...record, completeness: computeCompleteness(record.fields, record.preloaded_context) } });
   } catch (err) {
     console.error('[dashboard] GET /api/records/:callSid failed:', err);
     res.status(500).json({ error: err.message || 'Failed to load record' });
@@ -418,10 +418,7 @@ schemaFields('conditional_admin_update').forEach(function (key) {
   CONDITIONAL_ADMIN_KEYS[key] = true;
 });
 
-var HIDDEN_FIELD_KEYS = {
-  referral_note: true,
-  referring_provider_name: true
-};
+var HIDDEN_FIELD_KEYS = {};
 
 var LEGACY_FIELD_ALIASES = {
   patient_stated_reason: 'chief_complaint_text',
@@ -439,6 +436,8 @@ var FIELD_META = {
   specialist_name: { label: 'Specialist' },
   appointment_type: { label: 'Visit type' },
   booking_reason: { label: 'Booking reason' },
+  referral_note: { label: 'Referral note' },
+  referring_provider_name: { label: 'Referring provider' },
   preferred_language: { label: 'Preferred language' },
   preferred_contact_method: { label: 'Best contact method' },
   insurance_payer_name: { label: 'Insurance payer', unverified: true },
@@ -478,7 +477,7 @@ var GROUP_DEFS = [
     kind: 'fields',
     contextOnly: true,
     badge: 'Context',
-    fields: ['full_name', 'date_of_birth', 'phone_number', 'appointment_datetime', 'clinic_name', 'specialist_name', 'appointment_type', 'booking_reason']
+    fields: ['full_name', 'date_of_birth', 'phone_number', 'appointment_datetime', 'clinic_name', 'specialist_name', 'appointment_type', 'booking_reason', 'referring_provider_name', 'referral_note']
   },
   {
     key: 'verification',
@@ -554,11 +553,9 @@ function isConditionalAdminKey(key) {
 
 function isResolvedForProgress(entry, key) {
   if (!entry) return false;
-  if (entry.state === 'preloaded') return isConditionalAdminKey(key);
-  if (entry.state === 'captured') return hasUsableValue(entry);
-  return entry.state === 'verified' ||
-    entry.state === 'updated' ||
-    entry.state === 'patient_declined' ||
+  if (entry.state === 'preloaded') return isConditionalAdminKey(key) && hasUsableValue(entry);
+  if (entry.state === 'verified' || entry.state === 'updated' || entry.state === 'captured') return hasUsableValue(entry);
+  return entry.state === 'patient_declined' ||
     entry.state === 'unable_to_capture' ||
     entry.state === 'not_applicable';
 }
@@ -567,7 +564,7 @@ function needsFollowUp(entry, key) {
   if (!entry) return true;
   if (entry.state === 'unable_to_capture') return true;
   if (entry.state === 'preloaded') return !isConditionalAdminKey(key);
-  if (entry.state === 'captured' && !hasUsableValue(entry)) return true;
+  if ((entry.state === 'verified' || entry.state === 'updated' || entry.state === 'captured') && !hasUsableValue(entry)) return true;
   return false;
 }
 
@@ -579,13 +576,15 @@ function hasBeenAddressed(entry, key) {
 }
 
 function classifyField(entry, required, callActive, key) {
-  if (entry && entry.state === 'preloaded') return 'preload';
-  if (entry && entry.state === 'verified') return 'verified';
-  if (entry && entry.state === 'updated') return 'updated';
+  if (entry && entry.state === 'preloaded' && hasUsableValue(entry)) return 'preload';
+  if (entry && entry.state === 'preloaded' && !hasUsableValue(entry)) return callActive ? 'wait' : (required ? 'needsdesk' : 'notstarted');
+  if (entry && entry.state === 'verified' && hasUsableValue(entry)) return 'verified';
+  if (entry && entry.state === 'updated' && hasUsableValue(entry)) return 'updated';
   if (entry && entry.state === 'captured' && hasUsableValue(entry)) return 'captured';
   if (entry && entry.state === 'patient_declined') return 'declined';
   if (entry && entry.state === 'not_applicable') return 'na';
   if (entry && entry.state === 'unable_to_capture') return 'needsdesk';
+  if (entry && (entry.state === 'verified' || entry.state === 'updated') && !hasUsableValue(entry)) return 'needsdesk';
   if (entry && entry.state === 'captured' && !hasUsableValue(entry)) return 'needsdesk';
   if (callActive) return 'wait';
   return required ? 'needsdesk' : 'notstarted';
@@ -615,6 +614,7 @@ function valueContent(entry, def, tone) {
   if (tone === 'wait') return { html: 'Waiting for call...', empty: true };
   if (tone === 'notstarted') return { html: '-', empty: true };
   if (!hasUsableValue(entry)) {
+    if (entry && (entry.state === 'verified' || entry.state === 'updated')) return { html: 'Marked ' + entry.state + ', but no value was recorded - confirm with patient', empty: true };
     if (entry && entry.state === 'captured') return { html: 'Marked captured, but no value was recorded - confirm with patient', empty: true };
     if (tone === 'needsdesk') return { html: "Couldn't capture on the call", empty: true };
     if (tone === 'declined') return { html: 'Patient declined', empty: true };
@@ -1201,7 +1201,7 @@ function renderRoster(records) {
 
   var html = '';
   if (attn.length) html += '<div class="sectlabel">Needs attention</div>' + attn.map(function (r) { return rosterRow(r.record, r.status); }).join('');
-  if (ready.length) html += '<div class="sectlabel">Ready for check-in</div>' + ready.map(function (r) { return rosterRow(r.record, r.status); }).join('');
+  if (ready.length) html += '<div class="sectlabel">Ready for pre-chart</div>' + ready.map(function (r) { return rosterRow(r.record, r.status); }).join('');
   if (other.length) html += '<div class="sectlabel">Other calls</div>' + other.map(function (r) { return rosterRow(r.record, r.status); }).join('');
   list.innerHTML = html;
 

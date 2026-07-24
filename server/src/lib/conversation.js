@@ -101,6 +101,7 @@ function getSession(callSid) {
       dobVerified: false,
       appointmentRetries: 0,
       appointmentVerified: false,
+      disclosureGiven: false,
       consentGiven: false,
       history: [], // Gemini Content[] used to reconstruct the interview chat each turn
     });
@@ -133,6 +134,8 @@ const DECLINE_PHRASES = [
   "i don't want", 'rather not',
 ];
 
+const VALUE_REQUIRED_STATES = new Set(['preloaded', 'verified', 'updated', 'captured']);
+
 function containsPhrase(text, phrase) {
   const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, 'i');
@@ -151,6 +154,16 @@ function classifyYesNo(text) {
   if (hasDecline && !hasAffirm) return 'decline';
   if (hasAffirm && !hasDecline) return 'affirm';
   return 'unclear';
+}
+
+function isConsentRefusal(text) {
+  const normalized = String(text || '').toLowerCase();
+  if (!normalized.trim()) return false;
+  return (
+    /\b(?:i\s+)?(?:do\s+not|don't|dont|won't|will\s+not|refuse|decline)\s+(?:consent|agree|give\s+permission)\b/i.test(normalized) ||
+    /\bno\s+(?:consent|recording|transcription|transcript|permission)\b/i.test(normalized) ||
+    /\b(?:do\s+not|don't|dont|stop)\s+(?:record|recording|transcribe|use\s+my\s+information)\b/i.test(normalized)
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -172,7 +185,23 @@ function getFieldState(snapshot, key) {
 // Projects this turn's tool calls on top of the caller-provided snapshot so we can tell, within
 // the SAME turn, whether the interview just became complete (rather than waiting for the caller
 // to persist to Supabase and pass a fresh snapshot on the next turn).
-function projectSnapshot(snapshot, toolCalls) {
+function stateFromProjectedValue(rawState, value) {
+  const state = FIELD_STATES.includes(rawState)
+    ? rawState
+    : (value != null ? 'captured' : 'unable_to_capture');
+  if (VALUE_REQUIRED_STATES.has(state) && isBlank(value)) return 'unable_to_capture';
+  return state;
+}
+
+function projectedValueForField(snapshot, patientContext, key, args, hasValue, rawState) {
+  if (hasValue) return args[key] ?? null;
+  if (rawState === 'verified' || rawState === 'preloaded') {
+    return contextFieldValue(snapshot, patientContext, key) ?? null;
+  }
+  return null;
+}
+
+function projectSnapshot(snapshot, toolCalls, patientContext) {
   const merged = { ...(snapshot || {}) };
   for (const call of toolCalls) {
     const group = FIELD_GROUPS.find((g) => g.tool === call.tool);
@@ -181,8 +210,9 @@ function projectSnapshot(snapshot, toolCalls) {
       const hasValue = Object.prototype.hasOwnProperty.call(call.args || {}, key);
       const hasState = Object.prototype.hasOwnProperty.call(call.args || {}, `${key}_state`);
       if (!hasValue && !hasState) continue;
-      const value = call.args[key] ?? null;
-      const state = call.args[`${key}_state`] || (value != null ? 'captured' : 'unable_to_capture');
+      const rawState = call.args[`${key}_state`];
+      const value = projectedValueForField(snapshot, patientContext, key, call.args || {}, hasValue, rawState);
+      const state = stateFromProjectedValue(rawState, value);
       merged[key] = { value, state };
     }
   }
@@ -333,12 +363,24 @@ function hasPreloadedOrCapturedValue(snapshot, patientContext, key) {
   return !isBlank(contextFieldValue(snapshot, patientContext, key));
 }
 
+function hasUsableFieldValue(snapshot, key) {
+  return !isBlank(fieldValue(snapshot, key));
+}
+
+function isResolvedStateWithValue(snapshot, key, state) {
+  if (!FINAL_CALL_RESOLUTION_STATES.has(state)) return false;
+  if (VALUE_REQUIRED_STATES.has(state)) return hasUsableFieldValue(snapshot, key);
+  return true;
+}
+
 function isFinalResolved(snapshot, key) {
-  return FINAL_CALL_RESOLUTION_STATES.has(getFieldState(snapshot, key));
+  return isResolvedStateWithValue(snapshot, key, getFieldState(snapshot, key));
 }
 
 function shouldAskConditionalAdminField(snapshot, patientContext, key) {
   if (isFinalResolved(snapshot, key)) return false;
+  const state = getFieldState(snapshot, key);
+  if (state && state !== 'preloaded' && !isResolvedStateWithValue(snapshot, key, state)) return true;
   if (fieldNeedsConfirmation(snapshot, patientContext, key)) return true;
   return !hasPreloadedOrCapturedValue(snapshot, patientContext, key);
 }
@@ -616,7 +658,7 @@ async function sendInterviewTurn(session, transcript, systemInstruction) {
 
 function buildGreeting(capturedFieldsSnapshot, patientContext) {
   if (patientContext?.fullName) {
-    const appt = patientContext.appointmentDatetime || capturedFieldsSnapshot?.appointment_datetime;
+    const appt = patientContext.appointmentDatetime || fieldValue(capturedFieldsSnapshot, 'appointment_datetime');
     const specialist = patientContext.specialistName ? ` with ${patientContext.specialistName}` : '';
     const apptPhrase = appt ? ` about your upcoming appointment ${appt}${specialist}` : ' about an upcoming appointment';
     return `Hi, this is Riverside Cardiology calling for ${patientContext.fullName}${apptPhrase}. To protect your privacy, please enter the patient's eight digit date of birth using your keypad. For example, January second, nineteen eighty would be zero one zero two one nine eight zero.`;
@@ -627,7 +669,7 @@ function buildGreeting(capturedFieldsSnapshot, patientContext) {
   // optional convenience key the caller may pass in capturedFieldsSnapshot (e.g. looked up from
   // the appointment record before dialing) purely so the greeting can reference it. If absent we
   // degrade gracefully and ask the patient to state it.
-  const apptDateTime = capturedFieldsSnapshot?.appointment_datetime;
+  const apptDateTime = fieldValue(capturedFieldsSnapshot, 'appointment_datetime');
 
   if (name && apptDateTime) {
     return `Hi! Hope you're having a good day. This is your doctor's office calling ahead of your upcoming visit on ${apptDateTime} — am I speaking with ${name}?`;
@@ -705,6 +747,105 @@ function buildAppointmentVerificationQuestion(capturedFieldsSnapshot, patientCon
   return `Before we talk about any medical details, I have you scheduled for ${appointmentPhrase}. Is that correct?`;
 }
 
+function cleanCorrectionValue(value) {
+  return String(value || '')
+    .replace(/^[\s,.;:-]+|[\s,.;:-]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractDateTimeCorrection(text) {
+  const normalized = String(text || '');
+  const monthToken =
+    '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|' +
+    'aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+  const dateToken =
+    '(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|' +
+    `${monthToken}\\s+\\d{1,2}(?:,\\s*\\d{4})?|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)`;
+  const timeToken = '\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m\\.?|p\\.?m\\.?)?';
+  const dateWithContext = normalized.match(new RegExp(`\\b${dateToken}\\b(?:[^.]*?\\b(?:at|around|for)\\s*${timeToken}\\b)?`, 'i'));
+  const timeOnly = normalized.match(new RegExp(`\\b(?:at|around|for|time\\s+is|time\\s+should\\s+be)\\s+(${timeToken})\\b`, 'i'));
+
+  let value = '';
+  if (dateWithContext) {
+    value = dateWithContext[0];
+  } else if (timeOnly) {
+    value = timeOnly[1];
+  }
+
+  return cleanCorrectionValue(value.replace(/\s+with\s+dr\.?\b.*$/i, ''));
+}
+
+function extractSpecialistCorrection(text) {
+  const match = String(text || '').match(/\b(dr\.?\s+[a-z][a-z.'-]*(?:\s+[a-z][a-z.'-]*){0,3})\b/i);
+  return match ? cleanCorrectionValue(match[1].replace(/^dr\.?\s*/i, 'Dr. ')) : '';
+}
+
+function extractClinicCorrection(text) {
+  const match = String(text || '').match(
+    /\b(?:clinic|office|location|place)\s+(?:is|should\s+be|was|at|to)\s+([^,.]+)|\bat\s+([^,.]*(?:clinic|cardiology|hospital|center|centre|office|health)[^,.]*)/i,
+  );
+  return match ? cleanCorrectionValue(match[1] || match[2]) : '';
+}
+
+function extractAppointmentTypeCorrection(text) {
+  const match = String(text || '').match(
+    /\b(?:appointment|visit)\s+type\s+(?:is|should\s+be)\s+([^,.]+)|\bfor\s+(?:a|an)?\s*([^,.]*(?:consult|consultation|follow-up|follow up|checkup|review|visit))\b/i,
+  );
+  return match ? cleanCorrectionValue(match[1] || match[2]) : '';
+}
+
+function extractAppointmentCorrections(text) {
+  const corrections = {};
+  const appointmentDatetime = extractDateTimeCorrection(text);
+  const clinicName = extractClinicCorrection(text);
+  const specialistName = extractSpecialistCorrection(text);
+  const appointmentType = extractAppointmentTypeCorrection(text);
+
+  if (!isBlank(appointmentDatetime)) corrections.appointment_datetime = appointmentDatetime;
+  if (!isBlank(clinicName)) corrections.clinic_name = clinicName;
+  if (!isBlank(specialistName)) corrections.specialist_name = specialistName;
+  if (!isBlank(appointmentType)) corrections.appointment_type = appointmentType;
+
+  return corrections;
+}
+
+function buildAppointmentCorrectionToolCalls(capturedFieldsSnapshot, patientContext, corrections) {
+  const correctedKeys = Object.keys(corrections || {}).filter((key) => !isBlank(corrections[key]));
+  if (correctedKeys.length === 0) return [];
+
+  const args = {};
+  const group = FIELD_GROUPS.find((item) => item.group === 'appointment_verification');
+  for (const key of group?.fields || []) {
+    if (Object.prototype.hasOwnProperty.call(corrections, key) && !isBlank(corrections[key])) {
+      args[key] = corrections[key];
+      args[`${key}_state`] = hasPreloadedOrCapturedValue(capturedFieldsSnapshot, patientContext, key)
+        ? 'updated'
+        : 'captured';
+      continue;
+    }
+
+    const value = contextFieldValue(capturedFieldsSnapshot, patientContext, key);
+    if (!isBlank(value)) {
+      args[key] = value;
+      args[`${key}_state`] = 'verified';
+    } else {
+      args[`${key}_state`] = 'unable_to_capture';
+    }
+  }
+
+  return [
+    {
+      tool: 'record_appointment_verification',
+      args,
+    },
+    {
+      tool: 'confirm_appointment',
+      args: { confirmed: true },
+    },
+  ];
+}
+
 function buildVisitReasonQuestion(capturedFieldsSnapshot, patientContext) {
   const bookingReason = contextFieldValue(capturedFieldsSnapshot, patientContext, 'booking_reason');
   const specialist = contextFieldValue(capturedFieldsSnapshot, patientContext, 'specialist_name') || 'the specialist';
@@ -735,7 +876,7 @@ function beginVerificationAfterDisclosure(
   prefix = '',
   toolCalls = [],
 ) {
-  session.consentGiven = true;
+  session.disclosureGiven = true;
   const bridge = prefix ? `${prefix} ` : '';
   const appointmentQuestion = buildAppointmentVerificationQuestion(capturedFieldsSnapshot, patientContext);
   if (appointmentQuestion) {
@@ -743,7 +884,7 @@ function beginVerificationAfterDisclosure(
     return {
       replyText: `${bridge}${CONSENT_SCRIPT} ${appointmentQuestion}`,
       toolCalls,
-      consentGiven: true,
+      consentGiven: false,
       stage: 'appointment_verification',
       emergencyDetected: false,
       endCall: false,
@@ -751,14 +892,14 @@ function beginVerificationAfterDisclosure(
     };
   }
 
-  session.stage = 'interview';
+  session.stage = 'appointment_verification';
   return {
     replyText:
       `${bridge}${CONSENT_SCRIPT} ` +
       'Before we talk about any medical details, please confirm the appointment date and time, clinic or specialist, and visit type so I know I am preparing the right chart.',
     toolCalls,
-    consentGiven: true,
-    stage: 'interview',
+    consentGiven: false,
+    stage: 'appointment_verification',
     emergencyDetected: false,
     endCall: false,
     useTts: false,
@@ -891,6 +1032,25 @@ export async function runTurnWithContext({
 
   // ---- Stage: appointment_verification ----
   if (session.stage === 'appointment_verification') {
+    if (!session.consentGiven && isConsentRefusal(text)) {
+      session.stage = 'done';
+      return {
+        replyText:
+          "I understand. I won't continue the intake call or collect any more information. Please contact the office directly if you'd like to complete intake another way. Goodbye.",
+        toolCalls: [],
+        consentGiven: false,
+        stage: 'consent_declined',
+        emergencyDetected: false,
+        endCall: true,
+        callStatus: 'consent_declined',
+        useTts: false,
+      };
+    }
+
+    if (!session.consentGiven && text) {
+      session.consentGiven = true;
+    }
+
     const verdict = classifyYesNo(text);
     if (verdict === 'affirm') {
       session.appointmentVerified = true;
@@ -904,6 +1064,22 @@ export async function runTurnWithContext({
     }
 
     if (verdict === 'decline' && session.appointmentRetries === 0) {
+      const correctionToolCalls = buildAppointmentCorrectionToolCalls(
+        capturedFieldsSnapshot,
+        patientContext,
+        extractAppointmentCorrections(text),
+      );
+      if (correctionToolCalls.length > 0) {
+        session.appointmentVerified = true;
+        return beginInterview(
+          session,
+          capturedFieldsSnapshot,
+          patientContext,
+          "Thanks for catching that. I'll update the appointment details.",
+          correctionToolCalls,
+        );
+      }
+
       session.appointmentRetries += 1;
       return {
         replyText:
@@ -915,6 +1091,22 @@ export async function runTurnWithContext({
         endCall: false,
         useTts: false,
       };
+    }
+
+    const correctionToolCalls = buildAppointmentCorrectionToolCalls(
+      capturedFieldsSnapshot,
+      patientContext,
+      extractAppointmentCorrections(text),
+    );
+    if (correctionToolCalls.length > 0) {
+      session.appointmentVerified = true;
+      return beginInterview(
+        session,
+        capturedFieldsSnapshot,
+        patientContext,
+        "Thanks, I'll update those appointment details.",
+        correctionToolCalls,
+      );
     }
 
     if (session.appointmentRetries === 0) {
@@ -1002,7 +1194,7 @@ export async function runTurnWithContext({
   }
 
   const calledEndInterview = toolCalls.some((tc) => tc.tool === 'end_interview');
-  const projected = projectSnapshot(capturedFieldsSnapshot, toolCalls);
+  const projected = projectSnapshot(capturedFieldsSnapshot, toolCalls, patientContext);
   const pendingAfter = pendingRequiredFields(projected, patientContext);
 
   if (calledEndInterview && pendingAfter.length > 0) {

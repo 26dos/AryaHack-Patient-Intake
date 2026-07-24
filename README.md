@@ -282,7 +282,7 @@ node scripts/test_supabase.js
 node scripts/test_tts.js
 ```
 
-These scripts call live services, so they require the relevant environment variables and Supabase schema.
+These scripts call live services, so they require the relevant environment variables and Supabase schema. To run only the deterministic offline portions, set `ALLOW_LIVE_SMOKE_SKIP=1`; otherwise missing live credentials fail the smoke test.
 
 ## Hackathon scope
 

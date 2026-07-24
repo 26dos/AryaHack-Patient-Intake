@@ -32,6 +32,7 @@ const CONSENT_REQUIRED_GROUPS = new Set(
 );
 const APPOINTMENT_VERIFICATION_FIELDS =
   FIELD_GROUPS.find((g) => g.group === 'appointment_verification')?.fields || [];
+const VALUE_REQUIRED_STATES = new Set(['preloaded', 'verified', 'updated', 'captured']);
 const noiseRetries = new Map();
 const TERMINAL_NON_SUMMARY_STATUSES = new Set([
   'voicemail',
@@ -87,6 +88,26 @@ const FIELD_LABELS = {
   smoking_alcohol: 'Smoking/alcohol',
   occupation: 'Occupation',
   specialty_specific_social_history: 'Specialty-specific social history',
+};
+const RECORD_CONTEXT_FIELD_MAP = {
+  full_name: 'fullName',
+  date_of_birth: 'dateOfBirth',
+  phone_number: 'phoneNumber',
+  appointment_datetime: 'appointmentDatetime',
+  clinic_name: 'clinicName',
+  specialist_name: 'specialistName',
+  appointment_type: 'appointmentType',
+  booking_reason: 'bookingReason',
+  referral_note: 'referralNote',
+  referring_provider_name: 'referringProviderName',
+  insurance_payer_name: 'insurancePayerName',
+  insurance_member_id: 'insuranceMemberId',
+  insurance_group_number: 'insuranceGroupNumber',
+  preferred_contact_method: 'preferredContactMethod',
+  preferred_language: 'preferredLanguage',
+  current_medications: 'knownMedications',
+  known_allergies: 'knownAllergies',
+  relevant_conditions: 'relevantConditions',
 };
 const SUMMARY_STATE_LABELS = {
   preloaded: 'on file before call',
@@ -213,10 +234,75 @@ function findInPreloadedContext(context, fieldKey) {
   for (const groupValue of Object.values(context || {})) {
     if (!groupValue || typeof groupValue !== 'object') continue;
     if (Object.prototype.hasOwnProperty.call(groupValue, fieldKey)) {
-      return groupValue[fieldKey];
+      return valueFromFieldEntry(groupValue[fieldKey]);
     }
   }
   return undefined;
+}
+
+function entryFromPreloadedContextValue(raw) {
+  const value = valueFromFieldEntry(raw);
+  if (!hasProvidedValue(value)) return null;
+  const rawObject = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const state = FIELD_STATE_SET.has(rawObject.state) ? rawObject.state : 'preloaded';
+  return {
+    ...rawObject,
+    value,
+    state,
+  };
+}
+
+function applyPreloadedContextField(patientContext, fieldKey, rawValue) {
+  const entry = entryFromPreloadedContextValue(rawValue);
+  if (!entry) return false;
+
+  patientContext.preloadedIntakeFields[fieldKey] = {
+    ...(patientContext.preloadedIntakeFields[fieldKey] || {}),
+    ...entry,
+  };
+
+  if (entry.needsConfirmation || entry.needsConfirmationReason) {
+    patientContext.needsConfirmation[fieldKey] = entry.needsConfirmationReason || true;
+  }
+  if (entry.lastConfirmedAt) {
+    patientContext.lastConfirmedAt[fieldKey] = entry.lastConfirmedAt;
+  }
+
+  const patientKey = RECORD_CONTEXT_FIELD_MAP[fieldKey];
+  if (patientKey && !hasProvidedValue(patientContext[patientKey])) {
+    patientContext[patientKey] = entry.value;
+  }
+
+  return true;
+}
+
+function buildPatientContextFromRecord(record, patient) {
+  const patientContext = {
+    ...(patient || {}),
+    preloadedIntakeFields: { ...(patient?.preloadedIntakeFields || {}) },
+    needsConfirmation: { ...(patient?.needsConfirmation || {}) },
+    lastConfirmedAt: { ...(patient?.lastConfirmedAt || {}) },
+  };
+
+  let hasContext = Boolean(patient);
+  for (const groupValue of Object.values(record?.preloaded_context || {})) {
+    if (!groupValue || typeof groupValue !== 'object') continue;
+    for (const [fieldKey, rawValue] of Object.entries(groupValue)) {
+      if (!RECORD_CONTEXT_FIELD_MAP[fieldKey] && !ALL_FIELD_KEYS.includes(fieldKey)) continue;
+      hasContext = applyPreloadedContextField(patientContext, fieldKey, rawValue) || hasContext;
+    }
+  }
+
+  if (record?.phone_number && !hasProvidedValue(patientContext.phoneNumber)) {
+    patientContext.phoneNumber = record.phone_number;
+    hasContext = true;
+  }
+  if (record?.appointment_datetime && !hasProvidedValue(patientContext.appointmentDatetime)) {
+    patientContext.appointmentDatetime = record.appointment_datetime;
+    hasContext = true;
+  }
+
+  return hasContext ? patientContext : null;
 }
 
 function fieldValueFromRecordOrPatient(record, patient, fieldKey) {
@@ -256,20 +342,33 @@ function defaultStateForField(group, fieldKey, value, record, patient) {
     const expected = fieldValueFromRecordOrPatient(record, patient, fieldKey);
     return valuesMatchForVerification(expected, value) ? 'verified' : 'updated';
   }
-  if (group.group.endsWith('_update')) return 'updated';
   return 'captured';
 }
 
 function normalizeFieldState(rawState, value, group, fieldKey, record, patient) {
+  let state;
   if (rawState && FIELD_STATE_SET.has(rawState)) {
     if (rawState === 'verified' && group.group === 'identity_verification') {
       const expected = fieldValueFromRecordOrPatient(record, patient, fieldKey);
       const valueToVerify = hasProvidedValue(value) ? value : expected;
-      return valuesMatchForVerification(expected, valueToVerify) ? 'verified' : 'captured';
+      state = valuesMatchForVerification(expected, valueToVerify) ? 'verified' : 'captured';
+    } else {
+      state = rawState;
     }
-    return rawState;
+  } else {
+    state = defaultStateForField(group, fieldKey, value, record, patient);
   }
-  return defaultStateForField(group, fieldKey, value, record, patient);
+
+  if (VALUE_REQUIRED_STATES.has(state)) {
+    const fallbackValue =
+      state === 'verified' || state === 'preloaded'
+        ? fieldValueFromRecordOrPatient(record, patient, fieldKey)
+        : undefined;
+    const valueForState = hasProvidedValue(value) ? value : fallbackValue;
+    if (!hasProvidedValue(valueForState)) return 'unable_to_capture';
+  }
+
+  return state;
 }
 
 function orderedSummaryKeys(fields = {}) {
@@ -354,6 +453,19 @@ async function seedDemoPatient(callSid, patient, phoneNumber) {
 }
 
 async function applyToolCalls(callSid, toolCalls = [], { record = null, patient = null, consentLogged = false } = {}) {
+  const appointmentFieldsRecordedThisBatch = new Set();
+  for (const call of toolCalls) {
+    const toolName = normalizeToolName(call.tool);
+    if (toolName !== 'record_appointment_verification') continue;
+    const args = call.args || {};
+    for (const field of APPOINTMENT_VERIFICATION_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(args, field) ||
+          Object.prototype.hasOwnProperty.call(args, `${field}_state`)) {
+        appointmentFieldsRecordedThisBatch.add(field);
+      }
+    }
+  }
+
   for (const call of toolCalls) {
     try {
       const toolName = normalizeToolName(call.tool);
@@ -361,6 +473,7 @@ async function applyToolCalls(callSid, toolCalls = [], { record = null, patient 
         await upsertRecord(callSid, { appointment_confirmed: !!call.args?.confirmed });
         if (call.args?.confirmed) {
           for (const field of APPOINTMENT_VERIFICATION_FIELDS) {
+            if (appointmentFieldsRecordedThisBatch.has(field)) continue;
             const value = fieldValueFromRecordOrPatient(record, patient, field);
             if (hasProvidedValue(value)) {
               await upsertField(callSid, field, value, 'verified');
@@ -392,10 +505,11 @@ async function applyToolCalls(callSid, toolCalls = [], { record = null, patient 
           await logEvent(callSid, 'invalid_field_state', { tool: call.tool, field, state: rawState });
         }
         const state = normalizeFieldState(rawState, rawValue, group, field, record, patient);
-        const value =
+        const valueCandidate =
           !hasValue && ['preloaded', 'verified'].includes(state)
-            ? fieldValueFromRecordOrPatient(record, patient, field) ?? null
+            ? fieldValueFromRecordOrPatient(record, patient, field)
             : rawValue;
+        const value = hasProvidedValue(valueCandidate) ? valueCandidate : null;
         await upsertField(callSid, field, value, state);
       }
     } catch (err) {
@@ -408,6 +522,7 @@ async function applyToolCalls(callSid, toolCalls = [], { record = null, patient 
 async function buildTurnTwiml({ callSid, transcript, digits, patient }) {
   const record = await getRecord(callSid);
   const resolvedPatient = patient || getDemoPatientByPhone(record?.phone_number);
+  const conversationPatientContext = buildPatientContextFromRecord(record, resolvedPatient);
   const capturedFieldsSnapshot = { ...(record?.fields || {}) };
   if (record?.appointment_datetime && !capturedFieldsSnapshot.appointment_datetime) {
     capturedFieldsSnapshot.appointment_datetime = { value: record.appointment_datetime, state: 'preloaded' };
@@ -418,7 +533,7 @@ async function buildTurnTwiml({ callSid, transcript, digits, patient }) {
     transcript,
     digits,
     capturedFieldsSnapshot,
-    patientContext: resolvedPatient,
+    patientContext: conversationPatientContext,
   });
   const twiml = new VoiceResponse();
 
@@ -450,13 +565,13 @@ async function buildTurnTwiml({ callSid, transcript, digits, patient }) {
 
   if (result.verifiedDateOfBirth) {
     await upsertField(callSid, 'date_of_birth', result.verifiedDateOfBirth, 'verified');
-    if (resolvedPatient?.fullName) {
-      await upsertField(callSid, 'full_name', resolvedPatient.fullName, 'verified');
+    if (conversationPatientContext?.fullName) {
+      await upsertField(callSid, 'full_name', conversationPatientContext.fullName, 'verified');
     }
   }
   await applyToolCalls(callSid, result.toolCalls, {
     record,
-    patient: resolvedPatient,
+    patient: conversationPatientContext,
     consentLogged: consentLoggedForWrites,
   });
   await logEvent(callSid, 'turn', { transcript, reply: result.replyText, stage: result.stage });

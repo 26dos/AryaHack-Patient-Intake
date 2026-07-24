@@ -432,13 +432,13 @@ function contextFields(rec, id){
   ];
 }
 function normalizeField(f, rec){
-  if(f.grp==="Contact update") return null;
   let grp=f.grp, label=f.label, phase=f.phase, req=f.req;
   if(grp==="Identity"||grp==="Consent"){ grp="Verification"; phase=0; req=1; }
   if(grp==="Consent") label="Recording & sharing disclosure";
   if(grp==="Reason for visit"){ grp="Visit reason update"; label="Patient's words"; phase=1; req=1; }
   if(grp==="Medications"||grp==="Allergies"){ grp="Safety updates"; phase=2; req=1; }
   if(grp==="History"){ grp="Relevant history"; phase=3; req=label==="Social history"?0:1; }
+  if(grp==="Contact update"){ grp="Admin follow-up"; label=label==="Best callback"?"Preferred contact method":label; phase=4; req=0; }
   if(grp==="Insurance") return null;
   const state=stateFor(f, grp, rec);
   return {...f, grp, label, phase, req, state};
@@ -455,9 +455,8 @@ function displayFields(rec, id=current){
   rec.fields.forEach(f=>{
     if(f.grp==="Insurance"){
       const state=stateFor(f,"Admin follow-up",rec);
-      if(state==="unable_to_capture"){
-        admin.push({...f, grp:"Admin follow-up", label:f.label==="Payer"?"Insurance payer":f.label, state, req:1, phase:4});
-      }
+      const req=state==="unable_to_capture"&&f.req?1:0;
+      admin.push({...f, grp:"Admin follow-up", label:f.label==="Payer"?"Insurance payer":f.label, state, req, phase:4});
       return;
     }
     const mapped=normalizeField(f,rec);

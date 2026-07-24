@@ -15,6 +15,7 @@ import { dobToDigits, getDemoPatient } from '../src/lib/demoPatients.js';
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env') });
 
 const hasLiveGeminiEnv = Boolean(process.env.GEMINI_API_KEY);
+const allowLiveSmokeSkip = process.env.ALLOW_LIVE_SMOKE_SKIP === '1';
 
 // conversation.js imports config.js and creates a Gemini client at import time. Prime unrelated
 // missing vars with inert values so deterministic checks run even without live credentials.
@@ -38,6 +39,7 @@ const FINAL_RESOLUTION_STATES = new Set([
   'unable_to_capture',
   'not_applicable',
 ]);
+const VALUE_REQUIRED_STATES = new Set(['preloaded', 'verified', 'updated', 'captured']);
 
 const MEDICAL_TOOLS = new Set([
   'record_visit_reason_update',
@@ -75,8 +77,12 @@ function applyToolCalls(snapshot, toolCalls) {
       const hasValue = Object.prototype.hasOwnProperty.call(call.args || {}, key);
       const hasState = Object.prototype.hasOwnProperty.call(call.args || {}, `${key}_state`);
       if (!hasValue && !hasState) continue;
+      const rawState = call.args[`${key}_state`];
       const value = hasValue ? call.args[key] : snapshot[key]?.value ?? null;
-      const state = call.args[`${key}_state`] || (value != null ? 'captured' : 'unable_to_capture');
+      let state = rawState || (value != null ? 'captured' : 'unable_to_capture');
+      if (VALUE_REQUIRED_STATES.has(state) && (value === null || value === undefined || value === '')) {
+        state = 'unable_to_capture';
+      }
       snapshot[key] = { value, state, updated_at: new Date().toISOString() };
     }
   }
@@ -100,6 +106,11 @@ function assertState(snapshot, key, allowedStates) {
     allowedStates.includes(state),
     `expected ${key} state in ${allowedStates.join(', ')}; saw ${state || 'missing'}`,
   );
+}
+
+function assertValueIncludes(snapshot, key, expected) {
+  const value = snapshot[key]?.value;
+  assert.match(String(value || ''), expected, `expected ${key} value to match ${expected}; saw ${value || 'missing'}`);
 }
 
 function assertNoMedicalToolsBeforeDisclosure(results) {
@@ -142,7 +153,7 @@ async function startVerifiedCall({ callSid, patient }) {
   });
   preDisclosureResults.push(result);
   assert.equal(result.stage, 'appointment_verification');
-  assert.equal(result.consentGiven, true);
+  assert.equal(result.consentGiven, false);
   assert.match(result.replyText, new RegExp(CONSENT_SCRIPT.slice(0, 40).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(result.replyText, /Before we talk about any medical details/i);
   assert.doesNotMatch(result.replyText, /what has changed since booking|main reason for this visit/i);
@@ -170,6 +181,89 @@ async function startVerifiedCall({ callSid, patient }) {
   }
 
   return { snapshot, firstInterviewPrompt: result.replyText };
+}
+
+async function runConsentDeclineSmoke(patient) {
+  section('consent decline checks');
+  const callSid = `CONV_CONSENT_DECLINE_${Date.now()}`;
+  resetSession(callSid);
+  const snapshot = clonePreloadedSnapshot(patient);
+
+  await runTurnWithContext({
+    callSid,
+    transcript: null,
+    capturedFieldsSnapshot: snapshot,
+    patientContext: patient,
+  });
+
+  const disclosure = await runTurnWithContext({
+    callSid,
+    digits: dobToDigits(patient.dateOfBirth),
+    capturedFieldsSnapshot: snapshot,
+    patientContext: patient,
+  });
+  applyToolCalls(snapshot, disclosure.toolCalls);
+  assert.equal(disclosure.stage, 'appointment_verification');
+  assert.equal(disclosure.consentGiven, false);
+
+  const declined = await runTurnWithContext({
+    callSid,
+    transcript: 'I do not consent to recording or transcription.',
+    capturedFieldsSnapshot: snapshot,
+    patientContext: patient,
+  });
+
+  assert.equal(declined.stage, 'consent_declined');
+  assert.equal(declined.callStatus, 'consent_declined');
+  assert.equal(declined.consentGiven, false);
+  assert.equal(declined.endCall, true);
+  assert.deepEqual(declined.toolCalls, []);
+
+  console.log('PASS: explicit consent refusal ends the call without intake tool writes.');
+}
+
+async function runAppointmentCorrectionSmoke(patient) {
+  section('appointment correction checks');
+  const callSid = `CONV_APPT_CORRECTION_${Date.now()}`;
+  resetSession(callSid);
+  const snapshot = clonePreloadedSnapshot(patient);
+
+  await runTurnWithContext({
+    callSid,
+    transcript: null,
+    capturedFieldsSnapshot: snapshot,
+    patientContext: patient,
+  });
+
+  const disclosure = await runTurnWithContext({
+    callSid,
+    digits: dobToDigits(patient.dateOfBirth),
+    capturedFieldsSnapshot: snapshot,
+    patientContext: patient,
+  });
+  applyToolCalls(snapshot, disclosure.toolCalls);
+
+  const corrected = await runTurnWithContext({
+    callSid,
+    transcript: 'No, it should be Friday, July 24 at 10 AM with Dr. Marcus Lee.',
+    capturedFieldsSnapshot: snapshot,
+    patientContext: patient,
+  });
+
+  assert.equal(corrected.stage, 'interview');
+  assert.equal(corrected.consentGiven, true);
+  assertToolCalled(corrected.toolCalls, 'record_appointment_verification');
+  assertToolCalled(corrected.toolCalls, 'confirm_appointment');
+  applyToolCalls(snapshot, corrected.toolCalls);
+
+  assertState(snapshot, 'appointment_datetime', ['updated']);
+  assertValueIncludes(snapshot, 'appointment_datetime', /friday|10/i);
+  assertState(snapshot, 'specialist_name', ['updated']);
+  assertValueIncludes(snapshot, 'specialist_name', /dr\. marcus lee/i);
+  assertState(snapshot, 'clinic_name', ['verified']);
+  assertState(snapshot, 'appointment_type', ['verified']);
+
+  console.log('PASS: appointment corrections are persisted as updated fields before intake.');
 }
 
 async function runDeterministicVerificationSmoke(patient) {
@@ -201,8 +295,12 @@ async function runLiveGeminiWorkflowSmoke(patient) {
   section('live Gemini workflow checks');
 
   if (!hasLiveGeminiEnv) {
-    console.log('SKIP: missing live Gemini credential: GEMINI_API_KEY');
-    return;
+    const message = 'missing live Gemini credential: GEMINI_API_KEY';
+    if (allowLiveSmokeSkip) {
+      console.log(`SKIP: ${message}; ALLOW_LIVE_SMOKE_SKIP=1`);
+      return;
+    }
+    throw new Error(`${message}. Set ALLOW_LIVE_SMOKE_SKIP=1 only when intentionally running offline checks.`);
   }
 
   const callSid = `CONV_LIVE_${Date.now()}`;
@@ -279,6 +377,8 @@ try {
   assert.ok(patient, 'expected demo patient pat-maya-rivera');
 
   await runDeterministicVerificationSmoke(patient);
+  await runConsentDeclineSmoke(patient);
+  await runAppointmentCorrectionSmoke(patient);
   await runLiveGeminiWorkflowSmoke(patient);
   section('DONE');
 } catch (err) {

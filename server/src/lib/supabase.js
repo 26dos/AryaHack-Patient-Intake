@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../config.js';
-import { FIELD_STATES, REQUIRED_P0_FIELD_KEYS } from './intakeSchema.js';
+import { FIELD_GROUPS, FIELD_STATES, REQUIRED_P0_FIELD_KEYS } from './intakeSchema.js';
 
 export const supabase = createClient(config.supabase.url, config.supabase.serviceRoleKey);
 
@@ -36,12 +36,60 @@ const RESOLVED_COMPLETENESS_STATES = new Set([
   'unable_to_capture',
   'not_applicable',
 ]);
+const VALUE_REQUIRED_STATES = new Set(['preloaded', 'verified', 'updated', 'captured']);
+const CONDITIONAL_ADMIN_FIELD_KEYS = new Set(
+  FIELD_GROUPS.find((g) => g.group === 'conditional_admin_update')?.fields || []
+);
 
 function validFieldStates() {
   return Array.from(new Set([
     ...(Array.isArray(FIELD_STATES) ? FIELD_STATES : []),
     ...INTENDED_FIELD_STATES,
   ]));
+}
+
+function hasProvidedValue(value) {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  return true;
+}
+
+function valueFromFieldEntry(entry) {
+  if (entry && typeof entry === 'object' && Object.prototype.hasOwnProperty.call(entry, 'value')) {
+    return entry.value;
+  }
+  return entry;
+}
+
+function findInPreloadedContext(context, fieldKey) {
+  for (const groupValue of Object.values(context || {})) {
+    if (!groupValue || typeof groupValue !== 'object') continue;
+    if (Object.prototype.hasOwnProperty.call(groupValue, fieldKey)) {
+      return valueFromFieldEntry(groupValue[fieldKey]);
+    }
+  }
+  return undefined;
+}
+
+function completenessEntryFor(fields, preloadedContext, key) {
+  const entry = fields?.[key];
+  if (entry) return entry;
+  if (!CONDITIONAL_ADMIN_FIELD_KEYS.has(key)) return null;
+  const preloadedValue = findInPreloadedContext(preloadedContext, key);
+  if (!hasProvidedValue(preloadedValue)) return null;
+  return { value: preloadedValue, state: 'preloaded' };
+}
+
+function isCompletenessResolved(key, entry) {
+  if (!entry || !entry.state) return false;
+  if (entry.state === 'preloaded') {
+    return CONDITIONAL_ADMIN_FIELD_KEYS.has(key) && hasProvidedValue(valueFromFieldEntry(entry));
+  }
+  if (!RESOLVED_COMPLETENESS_STATES.has(entry.state)) return false;
+  if (VALUE_REQUIRED_STATES.has(entry.state) && !hasProvidedValue(valueFromFieldEntry(entry))) return false;
+  return true;
 }
 
 /**
@@ -159,9 +207,10 @@ export async function listRecentRecords(limit = 20) {
  * field keys from intakeSchema.js.
  *
  * @param {Record<string, {value: any, state: string, updated_at: string}>} fields
+ * @param {Record<string, any>} preloadedContext
  * @returns {{ totalRequired: number, resolved: number, captured: number, declinedOrUnable: number, unableToCapture: string[], unableToCaptureCount: number, deskFollowUp: string[], missing: string[] }}
  */
-export function computeCompleteness(fields = {}) {
+export function computeCompleteness(fields = {}, preloadedContext = {}) {
   const safeFields = fields || {};
   let resolved = 0;
   let captured = 0;
@@ -171,17 +220,12 @@ export function computeCompleteness(fields = {}) {
   const missing = [];
 
   for (const key of REQUIRED_P0_FIELD_KEYS) {
-    const entry = safeFields[key];
-    if (!entry || !entry.state) {
+    const entry = completenessEntryFor(safeFields, preloadedContext, key);
+    if (!isCompletenessResolved(key, entry)) {
       missing.push(key);
       continue;
     }
-    if (RESOLVED_COMPLETENESS_STATES.has(entry.state)) {
-      resolved += 1;
-    } else {
-      missing.push(key);
-      continue;
-    }
+    resolved += 1;
 
     if (entry.state === 'captured') {
       captured += 1;

@@ -16,6 +16,7 @@ dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env'
 const REQUIRED_SUPABASE_ENV = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
 const missingSupabaseEnv = REQUIRED_SUPABASE_ENV.filter((name) => !process.env[name]);
 const hasLiveSupabaseEnv = missingSupabaseEnv.length === 0;
+const allowLiveSmokeSkip = process.env.ALLOW_LIVE_SMOKE_SKIP === '1';
 
 // supabase.js creates a client at import time. Prime missing vars with inert values so the
 // deterministic computeCompleteness checks can run without live credentials.
@@ -102,6 +103,41 @@ async function runDeterministicChecks() {
   assert.equal(preloadedOnly.resolved, REQUIRED_P0_FIELD_KEYS.length - 1);
   assert.ok(preloadedOnly.missing.includes('date_of_birth'));
 
+  const conditionalAdminPreloaded = computeCompleteness(
+    {
+      ...completeFields,
+      insurance_payer_name: undefined,
+      insurance_member_id: undefined,
+      insurance_group_number: undefined,
+      preferred_contact_method: undefined,
+      preferred_language: undefined,
+    },
+    {
+      existing_admin_info: {
+        insurance_payer_name: 'Aetna',
+        insurance_member_id: 'AET4829156',
+        insurance_group_number: 'GRP-1048',
+        preferred_contact_method: 'SMS',
+        preferred_language: 'English',
+      },
+    },
+  );
+  assert.deepEqual(
+    conditionalAdminPreloaded.missing.filter((key) => key.startsWith('insurance_') || key.startsWith('preferred_')),
+    [],
+    'preloaded conditional admin fields should resolve API completeness',
+  );
+
+  const malformedValueStates = computeCompleteness({
+    ...completeFields,
+    patient_stated_reason: { value: null, state: 'updated', updated_at: '2026-07-22T00:00:00.000Z' },
+    current_medications: { value: '', state: 'captured', updated_at: '2026-07-22T00:00:00.000Z' },
+    known_allergies: { value: null, state: 'verified', updated_at: '2026-07-22T00:00:00.000Z' },
+  });
+  assert.ok(malformedValueStates.missing.includes('patient_stated_reason'));
+  assert.ok(malformedValueStates.missing.includes('current_medications'));
+  assert.ok(malformedValueStates.missing.includes('known_allergies'));
+
   for (const oldOptionalKey of [
     'primary_care_provider',
     'referral_note',
@@ -125,8 +161,12 @@ async function runLiveSupabaseChecks() {
   section('live Supabase writes');
 
   if (!hasLiveSupabaseEnv) {
-    console.log(`SKIP: missing live Supabase credentials: ${missingSupabaseEnv.join(', ')}`);
-    return;
+    const message = `missing live Supabase credentials: ${missingSupabaseEnv.join(', ')}`;
+    if (allowLiveSmokeSkip) {
+      console.log(`SKIP: ${message}; ALLOW_LIVE_SMOKE_SKIP=1`);
+      return;
+    }
+    throw new Error(`${message}. Set ALLOW_LIVE_SMOKE_SKIP=1 only when intentionally running offline checks.`);
   }
 
   const callSid = `smoke-${Date.now()}`;
