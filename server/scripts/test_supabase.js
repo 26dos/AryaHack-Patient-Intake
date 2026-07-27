@@ -9,7 +9,12 @@ import assert from 'node:assert/strict';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
-import { FIELD_STATES, REQUIRED_P0_FIELD_KEYS } from '../src/lib/intakeSchema.js';
+import {
+  FIELD_GROUPS,
+  FIELD_STATES,
+  REQUIRED_P0_FIELD_KEYS,
+  requiredFieldKeysForPack,
+} from '../src/lib/intakeSchema.js';
 
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env') });
 
@@ -74,6 +79,10 @@ function buildCompleteFields() {
   );
 }
 
+function groupFields(groupName) {
+  return FIELD_GROUPS.find((group) => group.group === groupName)?.fields || [];
+}
+
 async function runDeterministicChecks() {
   section('offline state and completeness checks');
 
@@ -83,6 +92,7 @@ async function runDeterministicChecks() {
 
   const completeFields = buildCompleteFields();
   const complete = computeCompleteness(completeFields);
+  assert.deepEqual(complete.requiredKeys, REQUIRED_P0_FIELD_KEYS);
   assert.equal(complete.totalRequired, REQUIRED_P0_FIELD_KEYS.length);
   assert.equal(complete.resolved, REQUIRED_P0_FIELD_KEYS.length);
   assert.deepEqual(complete.missing, []);
@@ -127,6 +137,40 @@ async function runDeterministicChecks() {
     [],
     'preloaded conditional admin fields should resolve API completeness',
   );
+
+  const socialHistoryKeys = groupFields('social_history_update');
+  const dermatologyRequiredKeys = requiredFieldKeysForPack('dermatology');
+  const dermatologyCompleteness = computeCompleteness(
+    completeFields,
+    {
+      __active_pack__: {
+        id: 'dermatology',
+        requiredKeys: ['__active_pack__', ...dermatologyRequiredKeys],
+      },
+      existing_admin_info: {
+        __active_pack__: 'not a field',
+      },
+    },
+  );
+  assert.deepEqual(dermatologyCompleteness.requiredKeys, dermatologyRequiredKeys);
+  assert.equal(dermatologyCompleteness.totalRequired, dermatologyRequiredKeys.length);
+  assert.deepEqual(
+    dermatologyCompleteness.missing.filter((key) => socialHistoryKeys.includes(key)),
+    socialHistoryKeys,
+    'dermatology active pack should require unresolved social history fields',
+  );
+  assert.ok(
+    !dermatologyCompleteness.missing.includes('__active_pack__'),
+    'active pack marker should never be treated as a required field',
+  );
+
+  const noMarkerCompleteness = computeCompleteness(completeFields, {
+    existing_admin_info: {
+      insurance_payer_name: 'Aetna',
+    },
+  });
+  assert.deepEqual(noMarkerCompleteness.requiredKeys, REQUIRED_P0_FIELD_KEYS);
+  assert.equal(noMarkerCompleteness.totalRequired, REQUIRED_P0_FIELD_KEYS.length);
 
   const malformedValueStates = computeCompleteness({
     ...completeFields,

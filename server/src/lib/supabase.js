@@ -1,6 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../config.js';
-import { FIELD_GROUPS, FIELD_STATES, REQUIRED_P0_FIELD_KEYS } from './intakeSchema.js';
+import {
+  FIELD_GROUPS,
+  FIELD_STATES,
+  REQUIRED_P0_FIELD_KEYS,
+  requiredFieldKeysForPack,
+} from './intakeSchema.js';
 
 export const supabase = createClient(config.supabase.url, config.supabase.serviceRoleKey);
 
@@ -40,6 +45,7 @@ const VALUE_REQUIRED_STATES = new Set(['preloaded', 'verified', 'updated', 'capt
 const CONDITIONAL_ADMIN_FIELD_KEYS = new Set(
   FIELD_GROUPS.find((g) => g.group === 'conditional_admin_update')?.fields || []
 );
+const ALL_FIELD_KEY_SET = new Set(FIELD_GROUPS.flatMap((group) => group.fields));
 
 function validFieldStates() {
   return Array.from(new Set([
@@ -64,13 +70,42 @@ function valueFromFieldEntry(entry) {
 }
 
 function findInPreloadedContext(context, fieldKey) {
-  for (const groupValue of Object.values(context || {})) {
+  if (String(fieldKey || '').startsWith('__')) return undefined;
+  for (const [groupKey, groupValue] of Object.entries(context || {})) {
+    if (String(groupKey).startsWith('__')) continue;
     if (!groupValue || typeof groupValue !== 'object') continue;
     if (Object.prototype.hasOwnProperty.call(groupValue, fieldKey)) {
       return valueFromFieldEntry(groupValue[fieldKey]);
     }
   }
   return undefined;
+}
+
+function normalizeRequiredKeys(keys) {
+  if (!Array.isArray(keys)) return [];
+  return Array.from(
+    new Set(
+      keys.filter((key) =>
+        typeof key === 'string' &&
+        !key.startsWith('__') &&
+        ALL_FIELD_KEY_SET.has(key)
+      )
+    )
+  );
+}
+
+function requiredKeysForCompleteness(preloadedContext = {}) {
+  const marker = preloadedContext?.__active_pack__;
+  if (!marker || typeof marker !== 'object') return REQUIRED_P0_FIELD_KEYS;
+
+  const markerRequiredKeys = normalizeRequiredKeys(marker.requiredKeys);
+  if (markerRequiredKeys.length > 0) return markerRequiredKeys;
+
+  if (typeof marker.id === 'string') {
+    return requiredFieldKeysForPack(marker.id);
+  }
+
+  return REQUIRED_P0_FIELD_KEYS;
 }
 
 function completenessEntryFor(fields, preloadedContext, key) {
@@ -203,15 +238,17 @@ export async function listRecentRecords(limit = 20) {
 }
 
 /**
- * Given a record's `fields` JSONB, compute completeness against the P0 required
- * field keys from intakeSchema.js.
+ * Given a record's `fields` JSONB, compute completeness against the active
+ * question-pack required keys from preloaded_context, falling back to the base
+ * P0 required keys from intakeSchema.js.
  *
  * @param {Record<string, {value: any, state: string, updated_at: string}>} fields
  * @param {Record<string, any>} preloadedContext
- * @returns {{ totalRequired: number, resolved: number, captured: number, declinedOrUnable: number, unableToCapture: string[], unableToCaptureCount: number, deskFollowUp: string[], missing: string[] }}
+ * @returns {{ requiredKeys: string[], totalRequired: number, resolved: number, captured: number, declinedOrUnable: number, unableToCapture: string[], unableToCaptureCount: number, deskFollowUp: string[], missing: string[] }}
  */
 export function computeCompleteness(fields = {}, preloadedContext = {}) {
   const safeFields = fields || {};
+  const requiredKeys = requiredKeysForCompleteness(preloadedContext);
   let resolved = 0;
   let captured = 0;
   let declinedOrUnable = 0;
@@ -219,7 +256,7 @@ export function computeCompleteness(fields = {}, preloadedContext = {}) {
   const deskFollowUp = [];
   const missing = [];
 
-  for (const key of REQUIRED_P0_FIELD_KEYS) {
+  for (const key of requiredKeys) {
     const entry = completenessEntryFor(safeFields, preloadedContext, key);
     if (!isCompletenessResolved(key, entry)) {
       missing.push(key);
@@ -240,7 +277,8 @@ export function computeCompleteness(fields = {}, preloadedContext = {}) {
   }
 
   return {
-    totalRequired: REQUIRED_P0_FIELD_KEYS.length,
+    requiredKeys,
+    totalRequired: requiredKeys.length,
     resolved,
     captured,
     declinedOrUnable,
