@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Riverside Cardiology — Front Desk</title>
+<title>Arya Specialty Intake — Front Desk</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -163,7 +163,7 @@
   <header class="topbar">
     <div class="brand">
       <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l2-6 4 12 2-6h6"/></svg></span>
-      <div><h1>Riverside Cardiology</h1><div class="sub">Front desk · Intake</div></div>
+      <div><h1>Arya Specialty Intake</h1><div class="sub">Multi-specialty front desk · powered by Arya Health</div></div>
     </div>
     <div class="callchip" id="callchip">
       <span class="dot"></span>
@@ -191,6 +191,7 @@
             <div id="readyflag" class="ready-flag neutral"></div>
             <div class="meta">
               <span><span class="k">DOB</span><span class="mono" id="pdob">—</span></span>
+              <span><span class="k">Specialty</span><span id="pspecialty">—</span></span>
               <span><span class="k">Appt</span><span id="pappt">—</span></span>
               <span><span class="k">Phone</span><span class="mono" id="pphone">—</span></span>
             </div>
@@ -229,15 +230,15 @@ const PHASES = ["Verify","Reason","Safety","History","Admin","Pre-chart"];
 
 /* req:1 => REQUIRED for pre-chart readiness. No req => optional or context. */
 const ROSTER = [
-  {id:"maria",  time:"1:40pm", name:"Maria Alvarez", rsn:"Palpitations", force:"live"},
-  {id:"ken",    time:"2:20pm", name:"Ken Boyd",      rsn:"Follow-up · admin follow-up"},
-  {id:"priya",  time:"3:00pm", name:"Priya Raman",   rsn:"Chest pain · call didn’t connect"},
-  {id:"louis",  time:"1:10pm", name:"Louis Tran",    rsn:"Medication review"},
-  {id:"ada",    time:"1:30pm", name:"Ada Nwosu",     rsn:"Palpitations"},
-  {id:"sam",    time:"2:00pm", name:"Sam Feldman",   rsn:"Follow-up"},
-  {id:"rosa",   time:"2:40pm", name:"Rosa Diaz",     rsn:"New patient"},
-  {id:"omar",   time:"3:20pm", name:"Omar Haddad",   rsn:"Follow-up", force:"wait"},
-  {id:"grace",  time:"1:50pm", name:"Grace Kim",     rsn:"Follow-up · admin follow-up"},
+  {id:"maria",  time:"1:40pm", name:"Maria Alvarez", specialty:"Cardiology", rsn:"Palpitations", force:"live"},
+  {id:"ken",    time:"2:20pm", name:"Ken Boyd",      specialty:"Cardiology", rsn:"Follow-up · admin follow-up"},
+  {id:"priya",  time:"3:00pm", name:"Priya Raman",   specialty:"Cardiology", rsn:"Chest pain · call didn’t connect"},
+  {id:"louis",  time:"1:10pm", name:"Louis Tran",    specialty:"Cardiology", rsn:"Medication review"},
+  {id:"ada",    time:"1:30pm", name:"Ada Nwosu",     specialty:"Cardiology", rsn:"Palpitations"},
+  {id:"sam",    time:"2:00pm", name:"Sam Feldman",   specialty:"Cardiology", rsn:"Follow-up"},
+  {id:"rosa",   time:"2:40pm", name:"Rosa Diaz",     specialty:"Cardiology", rsn:"New patient"},
+  {id:"omar",   time:"3:20pm", name:"Omar Haddad",   specialty:"Cardiology", rsn:"Follow-up", force:"wait"},
+  {id:"grace",  time:"1:50pm", name:"Grace Kim",     specialty:"Cardiology", rsn:"Follow-up · admin follow-up"},
 ];
 
 const RECORDS = {
@@ -421,6 +422,8 @@ const cap = f => RESOLVED_STATES.has(f.state)||f.state==="ok"||f.state==="readba
 const callUnreached = rec => /couldn.?t reach|voicemail/i.test((rec&&rec.chip&&rec.chip.msg)||"");
 const callNotStarted = rec => /not started/i.test((rec&&rec.chip&&rec.chip.msg)||"");
 const waitLabel = rec => callUnreached(rec) ? "Not captured" : "Not started";
+const specialtyLabel = id => (ROSTER.find(x=>x.id===id)||{}).specialty || "Specialty";
+const rosterSubtitle = r => `${r.specialty||"Specialty"} · ${r.rsn}`;
 
 function stateFor(f, group, rec){
   if(f.state==="preloaded"||RESOLVED_STATES.has(f.state)||f.state==="wait") return f.state==="wait"&&callUnreached(rec)?"unable_to_capture":f.state;
@@ -438,10 +441,11 @@ function contextFields(rec, id){
   const r=ROSTER.find(x=>x.id===id)||{};
   const name=r.name||$("#pname").textContent||"Patient";
   const appt=rec.meta.appt.split(" · ");
+  const specialty=specialtyLabel(id);
   return [
     {grp:"Known clinic context", label:"Patient", val:name, sub:`DOB ${rec.meta.dob} · ${rec.meta.phone}`, state:"preloaded"},
-    {grp:"Known clinic context", label:"Appointment", val:appt[0]||rec.meta.appt, sub:(appt[1]||"Riverside Cardiology"), state:"preloaded"},
-    {grp:"Known clinic context", label:"Clinic / specialist", val:"Riverside Cardiology", sub:appt[1]||"Specialist visit", state:"preloaded"},
+    {grp:"Known clinic context", label:"Appointment", val:appt[0]||rec.meta.appt, sub:(appt[1]||"Specialist visit"), state:"preloaded"},
+    {grp:"Known clinic context", label:"Specialty", val:specialty, sub:appt[1]||"Specialist visit", state:"preloaded"},
     {grp:"Known clinic context", label:"Booking reason", val:r.rsn&&r.rsn.indexOf("admin follow-up")<0?r.rsn:"Follow-up", sub:"from scheduling context", state:"preloaded"}
   ];
 }
@@ -580,7 +584,7 @@ function selectPatient(id){
   document.querySelectorAll(".prow").forEach(r=>r.classList.toggle("active", r.dataset.id===id));
   const rec=RECORDS[id]; current=id;
   $("#pname").textContent=ROSTER.find(r=>r.id===id).name;
-  $("#pdob").textContent=rec.meta.dob; $("#pappt").textContent=rec.meta.appt; $("#pphone").textContent=rec.meta.phone;
+  $("#pdob").textContent=rec.meta.dob; $("#pspecialty").textContent=specialtyLabel(id); $("#pappt").textContent=rec.meta.appt; $("#pphone").textContent=rec.meta.phone;
   $("#phasestrip").classList.remove("show"); $("#phasestrip").innerHTML="";
   buildDOM(rec);
   const liveEmpty=(id==="maria"&&!mariaDone);
@@ -614,7 +618,7 @@ function buildRoster(){
   const rest=withStatus.filter(r=>r.status==="ready"||r.status==="wait");
   const row=r=>`<button class="prow" data-id="${r.id}">
       <span class="time mono">${r.time}</span>
-      <span class="who"><span class="nm">${r.name}</span><br><span class="rsn">${r.rsn}</span></span>
+      <span class="who"><span class="nm">${r.name}</span><br><span class="rsn">${rosterSubtitle(r)}</span></span>
       <span class="stat">${r.status==="attn"?attnPill(RECORDS[r.id]):pillFor(r.status)}</span></button>`;
   list.innerHTML=`<div class="sectlabel">Needs attention</div>`+attn.map(row).join("")+
                  `<div class="sectlabel">Ready for pre-chart</div>`+rest.map(row).join("");
