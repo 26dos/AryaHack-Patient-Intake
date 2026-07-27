@@ -6,7 +6,14 @@ import { upsertRecord, upsertField, logEvent, getRecord } from '../lib/supabase.
 import { synthesizeAndStore } from '../lib/tts.js';
 import { sendSms } from '../twilioClient.js';
 import { sendConfirmationEmail } from '../lib/email.js';
-import { FIELD_GROUPS, FIELD_STATES, EMERGENCY_KEYWORDS_MESSAGE, ALL_FIELD_KEYS } from '../lib/intakeSchema.js';
+import {
+  FIELD_GROUPS,
+  FIELD_STATES,
+  EMERGENCY_KEYWORDS_MESSAGE,
+  ALL_FIELD_KEYS,
+  requiredFieldKeysForPack,
+  resolvePackId,
+} from '../lib/intakeSchema.js';
 import { getDemoPatient, getDemoPatientByPhone } from '../lib/demoPatients.js';
 
 const router = express.Router();
@@ -227,11 +234,28 @@ function seededPreloadedContext(patient, phoneNumber) {
   const identity = { ...(context.patient_identity || {}) };
   if (!identity.phone_number && phoneNumber) identity.phone_number = phoneNumber;
   if (Object.keys(identity).length > 0) context.patient_identity = identity;
+  const activePack = activePackMarkerForPatient(patient);
+  if (activePack) context.__active_pack__ = activePack;
   return context;
 }
 
+function activePackMarkerForPatient(patient) {
+  if (!patient?.specialty) return null;
+  const id = resolvePackId(patient);
+  return {
+    id,
+    requiredKeys: requiredFieldKeysForPack(id),
+  };
+}
+
+function clinicNameForPatient(patient) {
+  return patient?.clinicName || findInPreloadedContext(patient?.preloadedContext, 'clinic_name') || "your doctor's office";
+}
+
 function findInPreloadedContext(context, fieldKey) {
-  for (const groupValue of Object.values(context || {})) {
+  if (String(fieldKey || '').startsWith('__')) return undefined;
+  for (const [groupKey, groupValue] of Object.entries(context || {})) {
+    if (String(groupKey).startsWith('__')) continue;
     if (!groupValue || typeof groupValue !== 'object') continue;
     if (Object.prototype.hasOwnProperty.call(groupValue, fieldKey)) {
       return valueFromFieldEntry(groupValue[fieldKey]);
@@ -279,6 +303,10 @@ function applyPreloadedContextField(patientContext, fieldKey, rawValue) {
 function buildPatientContextFromRecord(record, patient) {
   const patientContext = {
     ...(patient || {}),
+    preloadedContext: {
+      ...(patient?.preloadedContext || {}),
+      ...(record?.preloaded_context || {}),
+    },
     preloadedIntakeFields: { ...(patient?.preloadedIntakeFields || {}) },
     needsConfirmation: { ...(patient?.needsConfirmation || {}) },
     lastConfirmedAt: { ...(patient?.lastConfirmedAt || {}) },
@@ -449,6 +477,7 @@ async function seedDemoPatient(callSid, patient, phoneNumber) {
   await logEvent(callSid, 'demo_patient_seeded', {
     patientId: patient.id,
     preloadedFieldKeys: seededFieldKeys,
+    activePack: preloadedContext.__active_pack__ || null,
   });
 }
 
@@ -606,9 +635,10 @@ router.post('/voice/incoming', safeVoiceHandler(async (req, res) => {
 
   if (answeredBy && answeredBy.startsWith('machine')) {
     const twiml = new VoiceResponse();
+    const clinic = clinicNameForPatient(patient);
     await appendSpeech(
       twiml,
-      "Hi, this is Riverside Cardiology calling to complete your pre-visit intake. Please call us back at your convenience so we can get your chart ready before your appointment. Thank you!",
+      `Hi, this is ${clinic} calling to complete your pre-visit intake. Please call us back at your convenience so we can get your chart ready before your appointment. Thank you!`,
       { useTts: false },
     );
     twiml.hangup();
