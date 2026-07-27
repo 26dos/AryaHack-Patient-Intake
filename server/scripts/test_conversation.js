@@ -9,7 +9,16 @@ import assert from 'node:assert/strict';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
-import { FIELD_GROUPS, REQUIRED_P0_FIELD_KEYS, CONSENT_SCRIPT } from '../src/lib/intakeSchema.js';
+import {
+  FIELD_GROUPS,
+  REQUIRED_P0_FIELD_KEYS,
+  CONSENT_SCRIPT,
+  CHIEF_COMPLAINT_CATEGORIES,
+  CHIEF_COMPLAINT_CATEGORIES_ALL,
+  DEFAULT_PACK_ID,
+  requiredFieldKeysForPack,
+  resolvePackId,
+} from '../src/lib/intakeSchema.js';
 import { dobToDigits, getDemoPatient } from '../src/lib/demoPatients.js';
 
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env') });
@@ -29,7 +38,13 @@ for (const [key, value] of Object.entries({
   if (!process.env[key]) process.env[key] = value;
 }
 
-const { runTurnWithContext, resetSession } = await import('../src/lib/conversation.js');
+const {
+  buildSystemInstruction,
+  pendingRequiredFields,
+  resolveConversationPackId,
+  runTurnWithContext,
+  resetSession,
+} = await import('../src/lib/conversation.js');
 
 const FINAL_RESOLUTION_STATES = new Set([
   'verified',
@@ -118,6 +133,27 @@ function assertNoMedicalToolsBeforeDisclosure(results) {
     .flatMap((result) => result.toolCalls || [])
     .filter((call) => MEDICAL_TOOLS.has(call.tool));
   assert.deepEqual(earlyMedicalTools, [], 'medical intake tools should not fire before disclosure/appointment verification');
+}
+
+function groupFields(groupName) {
+  return FIELD_GROUPS.find((group) => group.group === groupName)?.fields || [];
+}
+
+function snapshotWithResolvedFields(keys) {
+  return Object.fromEntries(
+    keys.map((key) => [
+      key,
+      {
+        value: `${key} value`,
+        state: 'captured',
+        updated_at: '2026-07-22T00:00:00.000Z',
+      },
+    ]),
+  );
+}
+
+function assertSameList(actual, expected, message) {
+  assert.deepEqual(actual, expected, `${message}; saw ${actual.join(', ') || 'none'}`);
 }
 
 function unresolvedP0Fields(snapshot) {
@@ -291,6 +327,139 @@ async function runDeterministicVerificationSmoke(patient) {
   console.log('PASS: preloaded context, identity verification, appointment verification, and disclosure gate are deterministic.');
 }
 
+async function runQuestionPackModelSmoke(patient) {
+  section('question pack model checks');
+  const socialHistoryKeys = groupFields('social_history_update');
+  const patientQuestionKeys = groupFields('patient_questions');
+
+  assert.deepEqual(requiredFieldKeysForPack('base'), REQUIRED_P0_FIELD_KEYS);
+  assert.deepEqual(requiredFieldKeysForPack('cardiology'), REQUIRED_P0_FIELD_KEYS);
+  assert.deepEqual(
+    requiredFieldKeysForPack('dermatology'),
+    [...REQUIRED_P0_FIELD_KEYS, ...socialHistoryKeys],
+  );
+  assert.deepEqual(
+    requiredFieldKeysForPack('dialysis'),
+    [...REQUIRED_P0_FIELD_KEYS, ...patientQuestionKeys, ...socialHistoryKeys],
+  );
+
+  assert.equal(resolvePackId('Cardiology'), 'cardiology');
+  assert.equal(resolvePackId({ specialty: 'Dermatology' }), 'dermatology');
+  assert.equal(resolvePackId({ specialty: 'Nephrology' }), 'dialysis');
+  assert.equal(resolvePackId({ specialty: 'unknown specialty' }), DEFAULT_PACK_ID);
+  assert.equal(
+    resolveConversationPackId({ preloadedContext: { __active_pack__: { id: 'dialysis', requiredKeys: [] } } }),
+    'dialysis',
+  );
+  assert.equal(
+    resolveConversationPackId({ specialty: 'dermatology', preloadedContext: { activePack: { id: 'dialysis' } } }),
+    'dermatology',
+  );
+
+  for (const category of [
+    'skin_lesion_or_rash',
+    'skin_cancer_screening',
+    'dialysis_treatment_review',
+    'access_site_concern',
+  ]) {
+    assert.ok(CHIEF_COMPLAINT_CATEGORIES_ALL.includes(category), `${category} should be in the all-pack category union`);
+    assert.ok(!CHIEF_COMPLAINT_CATEGORIES.includes(category), `${category} should not change the base category list`);
+  }
+
+  const greeting = await runTurnWithContext({
+    callSid: `CONV_PACK_GREETING_${Date.now()}`,
+    transcript: null,
+    capturedFieldsSnapshot: {},
+    patientContext: {
+      fullName: patient.fullName,
+      dateOfBirth: patient.dateOfBirth,
+      appointmentDatetime: patient.appointmentDatetime,
+      specialistName: patient.specialistName,
+      clinicName: 'Downtown Dermatology',
+    },
+  });
+  assert.match(greeting.replyText, /Downtown Dermatology/);
+  assert.doesNotMatch(greeting.replyText, /Riverside Cardiology/);
+
+  console.log('PASS: pack model, category union, resolution fallback, and clinic greeting are deterministic.');
+}
+
+async function runQuestionPackConversationSmoke() {
+  section('question pack conversation checks');
+  const baseResolvedSnapshot = snapshotWithResolvedFields(REQUIRED_P0_FIELD_KEYS);
+  const socialHistoryKeys = groupFields('social_history_update');
+  const patientQuestionKeys = groupFields('patient_questions');
+
+  const baseContext = { specialty: 'general' };
+  const cardiologyContext = { specialty: 'cardiology' };
+  const dermatologyContext = { specialty: 'dermatology' };
+  const dialysisContext = {
+    specialty: 'cardiology',
+    preloadedContext: { __active_pack__: { id: 'dialysis', requiredKeys: requiredFieldKeysForPack('dialysis') } },
+  };
+
+  assertSameList(
+    pendingRequiredFields(baseResolvedSnapshot, baseContext),
+    [],
+    'base should have no extra pending fields after P0 resolution',
+  );
+  assertSameList(
+    pendingRequiredFields(baseResolvedSnapshot, cardiologyContext),
+    [],
+    'cardiology should match base pending behavior',
+  );
+  assertSameList(
+    pendingRequiredFields(baseResolvedSnapshot, dermatologyContext),
+    socialHistoryKeys,
+    'dermatology should activate social history fields',
+  );
+  assertSameList(
+    pendingRequiredFields(baseResolvedSnapshot, dialysisContext),
+    [...patientQuestionKeys, ...socialHistoryKeys],
+    'dialysis should activate patient questions and social history fields',
+  );
+
+  const dermatologyPackId = resolveConversationPackId(dermatologyContext);
+  const dermatologyPrompt = buildSystemInstruction({
+    pendingKeys: pendingRequiredFields(baseResolvedSnapshot, dermatologyContext, dermatologyPackId),
+    capturedFieldsSnapshot: baseResolvedSnapshot,
+    patientContext: dermatologyContext,
+    packId: dermatologyPackId,
+    adviceFlagThisTurn: false,
+  });
+  assert.match(dermatologyPrompt, /Specialty guidance for this call/i);
+  assert.match(dermatologyPrompt, /social_history_update/);
+  assert.match(dermatologyPrompt, /skin concern/i);
+  assert.match(dermatologyPrompt, /sun-exposure/i);
+  assert.match(dermatologyPrompt, /skin_lesion_or_rash/);
+
+  const dialysisPackId = resolveConversationPackId(dialysisContext);
+  const dialysisPrompt = buildSystemInstruction({
+    pendingKeys: pendingRequiredFields(baseResolvedSnapshot, dialysisContext, dialysisPackId),
+    capturedFieldsSnapshot: baseResolvedSnapshot,
+    patientContext: dialysisContext,
+    packId: dialysisPackId,
+    adviceFlagThisTurn: false,
+  });
+  assert.match(dialysisPrompt, /patient_questions/);
+  assert.match(dialysisPrompt, /dialysis schedule/i);
+  assert.match(dialysisPrompt, /questions for the care team/i);
+  assert.match(dialysisPrompt, /dialysis_treatment_review/);
+
+  const cardiologyPackId = resolveConversationPackId(cardiologyContext);
+  const cardiologyPrompt = buildSystemInstruction({
+    pendingKeys: pendingRequiredFields(baseResolvedSnapshot, cardiologyContext, cardiologyPackId),
+    capturedFieldsSnapshot: baseResolvedSnapshot,
+    patientContext: cardiologyContext,
+    packId: cardiologyPackId,
+    adviceFlagThisTurn: false,
+  });
+  assert.doesNotMatch(cardiologyPrompt, /Specialty guidance for this call/i);
+  assert.doesNotMatch(cardiologyPrompt, /social_history_update|patient_questions/);
+
+  console.log('PASS: pack-aware pending fields and specialty prompt guidance are deterministic.');
+}
+
 async function runLiveGeminiWorkflowSmoke(patient) {
   section('live Gemini workflow checks');
 
@@ -376,6 +545,8 @@ try {
   const patient = getDemoPatient('pat-maya-rivera');
   assert.ok(patient, 'expected demo patient pat-maya-rivera');
 
+  await runQuestionPackModelSmoke(patient);
+  await runQuestionPackConversationSmoke();
   await runDeterministicVerificationSmoke(patient);
   await runConsentDeclineSmoke(patient);
   await runAppointmentCorrectionSmoke(patient);

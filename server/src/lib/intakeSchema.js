@@ -123,3 +123,111 @@ export const CONSENT_SCRIPT =
   "The information you provide will be collected and used by Hope Clinic to assist with scheduling, intake, and providing services. " +
   "By continuing, you consent to the recording, transcription, and use of this information as described in our privacy notice. " +
   "You may end the call at any time.";
+
+// Specialty question packs layer on top of the shared base contract above.
+// A pack can turn otherwise-optional FIELD_GROUPS on for a specialty, suggest
+// extra chief-complaint categories, and carry short guidance strings that are
+// injected into the system prompt at call time. Packs only shape what data is
+// collected and how it is described in the patient's own words - they never add
+// diagnostic, assessment, or advice behavior.
+//
+// Each pack: {
+//   id,                          // stable pack identifier
+//   label,                       // human-readable name
+//   activateGroups: string[],    // FIELD_GROUPS `group` names to mark required
+//   chiefComplaintCategories,    // extra chief-complaint categories for this pack
+//   guidance: string[],          // short prompt lines (data collection only)
+//   fieldGuidance: {[fieldKey]: string}, // per-field prompt hints
+// }
+export const QUESTION_PACKS = {
+  base: {
+    id: 'base',
+    label: 'General intake',
+    activateGroups: [],
+    chiefComplaintCategories: [],
+    guidance: [],
+    fieldGuidance: {},
+  },
+  cardiology: {
+    id: 'cardiology',
+    label: 'Cardiology',
+    // Intentionally empty so cardiology's required set equals the base set
+    // (backward-compatibility anchor).
+    activateGroups: [],
+    chiefComplaintCategories: [],
+    guidance: [],
+    fieldGuidance: {},
+  },
+  dermatology: {
+    id: 'dermatology',
+    label: 'Dermatology',
+    activateGroups: ['social_history_update'],
+    chiefComplaintCategories: ['skin_lesion_or_rash', 'skin_cancer_screening', 'cosmetic_concern'],
+    guidance: [
+      "Have the patient describe the skin concern in their own words - location, how long it has been there, and any change in size, color, or bleeding - without assessing it.",
+    ],
+    fieldGuidance: {
+      specialty_specific_social_history:
+        "Capture sun-exposure and tanning history and any personal or family history of skin cancer.",
+      occupation:
+        "Note whether the occupation involves outdoor/sun exposure or chemical exposure relevant to the skin.",
+    },
+  },
+  dialysis: {
+    id: 'dialysis',
+    label: 'Dialysis',
+    activateGroups: ['social_history_update', 'patient_questions'],
+    chiefComplaintCategories: ['dialysis_treatment_review', 'access_site_concern', 'fluid_or_diet_management'],
+    guidance: [
+      "Confirm the patient's dialysis schedule and how they get to sessions, have them describe their access site in their own words, note recent changes, and capture questions for the care team - data collection only, never advise.",
+    ],
+    fieldGuidance: {
+      specialty_specific_social_history:
+        "Capture transportation to dialysis, home support, and any diet or fluid context in the patient's own words.",
+    },
+  },
+};
+
+export const DEFAULT_PACK_ID = 'base';
+
+// Maps a lowercase specialty string to a pack id. Renal-specialty aliases point
+// at the dialysis pack.
+export const SPECIALTY_TO_PACK = {
+  cardiology: 'cardiology',
+  dermatology: 'dermatology',
+  dialysis: 'dialysis',
+  nephrology: 'dialysis',
+  renal: 'dialysis',
+};
+
+// Resolve a pack id from either a specialty string or a context object carrying
+// a `.specialty`. Null/undefined/unknown specialties fall back to the default.
+export function resolvePackId(ctxOrSpecialty) {
+  const specialty =
+    typeof ctxOrSpecialty === 'string' ? ctxOrSpecialty : ctxOrSpecialty?.specialty;
+  if (typeof specialty !== 'string') return DEFAULT_PACK_ID;
+  return SPECIALTY_TO_PACK[specialty.trim().toLowerCase()] || DEFAULT_PACK_ID;
+}
+
+export function getPack(id) {
+  return QUESTION_PACKS[id] || QUESTION_PACKS[DEFAULT_PACK_ID];
+}
+
+// A group is required for a pack when it is required in the base contract OR the
+// pack explicitly activates it.
+export function isGroupRequiredForPack(group, packId) {
+  return group.required || getPack(packId).activateGroups.includes(group.group);
+}
+
+export function requiredFieldKeysForPack(packId) {
+  return FIELD_GROUPS.filter((g) => isGroupRequiredForPack(g, packId)).flatMap((g) => g.fields);
+}
+
+// Deduped union of the base chief-complaint categories followed by every pack's
+// extra categories, computed once at module load.
+export const CHIEF_COMPLAINT_CATEGORIES_ALL = [
+  ...new Set([
+    ...CHIEF_COMPLAINT_CATEGORIES,
+    ...Object.values(QUESTION_PACKS).flatMap((p) => p.chiefComplaintCategories),
+  ]),
+];

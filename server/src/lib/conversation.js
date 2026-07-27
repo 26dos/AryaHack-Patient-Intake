@@ -49,10 +49,15 @@ import { config } from '../config.js';
 import {
   FIELD_GROUPS,
   FIELD_STATES,
-  REQUIRED_P0_FIELD_KEYS,
-  CHIEF_COMPLAINT_CATEGORIES,
+  CHIEF_COMPLAINT_CATEGORIES_ALL,
+  DEFAULT_PACK_ID,
   EMERGENCY_KEYWORDS_MESSAGE,
   CONSENT_SCRIPT,
+  QUESTION_PACKS,
+  getPack,
+  isGroupRequiredForPack,
+  requiredFieldKeysForPack,
+  resolvePackId,
 } from './intakeSchema.js';
 import { checkEmergency, looksLikeClinicalAdviceRequest } from './guardrails.js';
 import { dobToDigits } from './demoPatients.js';
@@ -266,6 +271,10 @@ const FIELD_LABELS = {
   insurance_group_number: 'insurance group number',
   preferred_contact_method: 'preferred contact method',
   preferred_language: 'preferred language',
+  patient_questions: 'questions for the specialist',
+  smoking_alcohol: 'smoking or alcohol history',
+  occupation: 'occupation',
+  specialty_specific_social_history: 'specialty-specific social history',
 };
 
 const PATIENT_CONTEXT_FIELD_MAP = {
@@ -317,6 +326,17 @@ function contextFieldValue(snapshot, patientContext, key) {
   const patientContextKey = PATIENT_CONTEXT_FIELD_MAP[key];
   if (!patientContextKey) return undefined;
   return normalizeContextValue(patientContext?.[patientContextKey]);
+}
+
+function activePackId(patientContext) {
+  const marker = patientContext?.preloadedContext?.__active_pack__;
+  return marker && typeof marker === 'object' && typeof marker.id === 'string' ? marker.id : '';
+}
+
+export function resolveConversationPackId(patientContext) {
+  const directId = activePackId(patientContext);
+  if (typeof directId === 'string' && getPack(directId).id === directId) return directId;
+  return resolvePackId(patientContext);
 }
 
 function contextFieldState(snapshot, patientContext, key) {
@@ -399,10 +419,10 @@ function shouldAskRequiredField(snapshot, patientContext, key) {
   return true;
 }
 
-function pendingRequiredFields(snapshot, patientContext) {
+export function pendingRequiredFields(snapshot, patientContext, packId = resolveConversationPackId(patientContext)) {
   const pending = [];
   for (const group of FIELD_GROUPS) {
-    if (!group.required) continue;
+    if (!isGroupRequiredForPack(group, packId)) continue;
     for (const key of group.fields) {
       if (shouldAskRequiredField(snapshot, patientContext, key)) pending.push(key);
     }
@@ -415,10 +435,10 @@ function describeFields(keys) {
   return keys.map((key) => fieldLabel(key)).join(', ');
 }
 
-function describePending(pendingKeys) {
-  if (pendingKeys.length === 0) return 'None — all required conversation tasks are resolved.';
+function describePending(pendingKeys, packId) {
+  if (pendingKeys.length === 0) return 'None - all required conversation tasks are resolved.';
   const byGroup = FIELD_GROUPS
-    .filter((group) => group.required)
+    .filter((group) => isGroupRequiredForPack(group, packId))
     .map((group) => {
       const groupKeys = group.fields.filter((key) => pendingKeys.includes(key));
       if (!groupKeys.length) return null;
@@ -428,9 +448,9 @@ function describePending(pendingKeys) {
   return byGroup.join(' | ');
 }
 
-function describeDoNotAskFields(snapshot, patientContext, pendingKeys) {
+function describeDoNotAskFields(snapshot, patientContext, pendingKeys, packId) {
   const pending = new Set(pendingKeys);
-  const alreadyHandled = REQUIRED_P0_FIELD_KEYS.filter((key) => {
+  const alreadyHandled = requiredFieldKeysForPack(packId).filter((key) => {
     if (pending.has(key)) return false;
     return hasPreloadedOrCapturedValue(snapshot, patientContext, key) || getFieldState(snapshot, key);
   });
@@ -471,13 +491,17 @@ function describeContextLines(snapshot, patientContext) {
 // Gemini tool/function-calling schema, built from FIELD_GROUPS (single source of truth).
 // ---------------------------------------------------------------------------------------------
 
+const PACK_ACTIVATED_GROUPS = new Set(
+  Object.values(QUESTION_PACKS).flatMap((pack) => pack.activateGroups || [])
+);
+
 function buildFieldProperties(fields) {
   const properties = {};
   for (const field of fields) {
     const isCategory = field === 'chief_complaint_category';
     properties[field] = {
       type: SchemaType.STRING,
-      ...(isCategory ? { enum: CHIEF_COMPLAINT_CATEGORIES } : {}),
+      ...(isCategory ? { enum: CHIEF_COMPLAINT_CATEGORIES_ALL } : {}),
       description: isCategory
         ? 'Closest matching structured category for the chief complaint.'
         : `Value for ${field}. For preloaded information, repeat the clinic value only when the patient verifies it, or send the updated value when they correct it.`,
@@ -500,7 +524,7 @@ function buildFunctionDeclarations() {
     name: group.tool,
     description:
       `Record ${group.group.replace(/_/g, ' ')} information the patient has just provided or declined. ` +
-      `${group.required ? 'This is a required P0 field group.' : 'This is an optional (nice-to-have) field group.'} ` +
+      `${fieldGroupRequirementDescription(group)} ` +
       'Call with only the field(s) addressed this turn; call it again later if more fields in this group come up.',
     parameters: {
       type: SchemaType.OBJECT,
@@ -532,6 +556,14 @@ function buildFunctionDeclarations() {
   ];
 }
 
+function fieldGroupRequirementDescription(group) {
+  if (group.required) return 'This is a required base field group.';
+  if (PACK_ACTIVATED_GROUPS.has(group.group)) {
+    return 'This group may be required by the active specialty pack; follow the required topics list for whether to collect it.';
+  }
+  return 'This is an optional nice-to-have field group.';
+}
+
 const FUNCTION_DECLARATIONS = buildFunctionDeclarations();
 
 // ---------------------------------------------------------------------------------------------
@@ -540,12 +572,37 @@ const FUNCTION_DECLARATIONS = buildFunctionDeclarations();
 
 const EXACT_REFUSAL_LINE = "I can't advise on that, your doctor will review this with you at your visit.";
 
-function buildSystemInstruction({
+function describeSpecialtyGuidance(packId) {
+  const pack = getPack(packId);
+  const guidanceLines = [];
+  for (const guidance of pack.guidance || []) {
+    guidanceLines.push(`- ${guidance}`);
+  }
+  for (const [fieldKey, guidance] of Object.entries(pack.fieldGuidance || {})) {
+    guidanceLines.push(`- ${fieldLabel(fieldKey)}: ${guidance}`);
+  }
+  if (guidanceLines.length === 0) return '';
+  return [`Active question pack: ${pack.label}.`, ...guidanceLines.slice(0, 6)].join('\n');
+}
+
+function describeCategoryGuidance(packId) {
+  const categories = getPack(packId).chiefComplaintCategories || [];
+  if (categories.length === 0) return '';
+  return (
+    'Preferred reason categories for this specialty, when they fit: ' +
+    `${categories.join(', ')}. Use another shared category only when these do not fit.`
+  );
+}
+
+export function buildSystemInstruction({
   pendingKeys,
   capturedFieldsSnapshot,
   patientContext,
+  packId = resolveConversationPackId(patientContext),
   adviceFlagThisTurn,
 }) {
+  const specialtyGuidance = describeSpecialtyGuidance(packId);
+  const categoryGuidance = describeCategoryGuidance(packId);
   return [
     'You are a warm, human-sounding pre-appointment intake assistant for a medical office, speaking with a patient over the phone.',
     'You are NOT a clinician. Persona: friendly data-collection assistant, never a diagnostician.',
@@ -553,8 +610,12 @@ function buildSystemInstruction({
     'Preloaded clinic context and current field states:',
     describeContextLines(capturedFieldsSnapshot, patientContext),
     '',
-    `Required topics still needing call resolution: ${describePending(pendingKeys)}`,
-    `Do not ask again about resolved, declined, unable, not-applicable, or preloaded-not-stale fields: ${describeDoNotAskFields(capturedFieldsSnapshot, patientContext, pendingKeys)}`,
+    `Required topics still needing call resolution: ${describePending(pendingKeys, packId)}`,
+    `Do not ask again about resolved, declined, unable, not-applicable, or preloaded-not-stale fields: ${describeDoNotAskFields(capturedFieldsSnapshot, patientContext, pendingKeys, packId)}`,
+    specialtyGuidance
+      ? `Specialty guidance for this call:\n${specialtyGuidance}`
+      : '',
+    categoryGuidance,
     '',
     'Ask-update rules:',
     '- Identity and appointment/specialist context must be verified before medical intake. If appointment details are already verified by the stage machine, do not repeat them.',
@@ -565,7 +626,7 @@ function buildSystemInstruction({
     "- Relevant history means only conditions, procedures, or events related to this visit reason or referral context. Do not collect a broad medical history. If no relevant history applies, use 'not_applicable' for the relevant history fields.",
     '- Ask insurance/contact/admin updates only when the field is listed as pending because it is missing, stale, or specifically needs confirmation. If admin info is preloaded and not pending, do not mention it.',
     "- When a patient corrects preloaded information, use state 'updated'. When they confirm preloaded information is still accurate, use state 'verified'. Use 'captured' only for new information that was not already in the clinic context.",
-    '- Optional P1 groups should only be recorded if the patient volunteers them or all P0 work is done and the conversation naturally allows it.',
+    "- Optional P1 groups that are not active for this pack should only be recorded if the patient volunteers them or all active required work is done and the conversation naturally allows it.",
     '- Never recollect a field that is already resolved, preloaded and not pending, verified, updated, captured, patient_declined, unable_to_capture, or not_applicable.',
     '',
     'Conversation style:',
@@ -661,7 +722,8 @@ function buildGreeting(capturedFieldsSnapshot, patientContext) {
     const appt = patientContext.appointmentDatetime || fieldValue(capturedFieldsSnapshot, 'appointment_datetime');
     const specialist = patientContext.specialistName ? ` with ${patientContext.specialistName}` : '';
     const apptPhrase = appt ? ` about your upcoming appointment ${appt}${specialist}` : ' about an upcoming appointment';
-    return `Hi, this is Riverside Cardiology calling for ${patientContext.fullName}${apptPhrase}. To protect your privacy, please enter the patient's eight digit date of birth using your keypad. For example, January second, nineteen eighty would be zero one zero two one nine eight zero.`;
+    const clinic = contextFieldValue(capturedFieldsSnapshot, patientContext, 'clinic_name') || "your doctor's office";
+    return `Hi, this is ${clinic} calling for ${patientContext.fullName}${apptPhrase}. To protect your privacy, please enter the patient's eight digit date of birth using your keypad. For example, January second, nineteen eighty would be zero one zero two one nine eight zero.`;
   }
 
   const name = fieldValue(capturedFieldsSnapshot, 'full_name');
@@ -931,6 +993,7 @@ export async function runTurnWithContext({
   const session = getSession(callSid);
   const text = (transcript || '').trim();
   const digitText = String(digits || '').replace(/\D/g, '');
+  const packId = resolveConversationPackId(patientContext);
 
   // ---- Hard-coded emergency pre-check, runs before anything reaches Gemini (PRD Section 10). ----
   if (text && checkEmergency(text)) {
@@ -1160,12 +1223,13 @@ export async function runTurnWithContext({
   }
 
   // ---- Stage: interview (main LLM tool-calling loop) ----
-  const pendingBefore = pendingRequiredFields(capturedFieldsSnapshot, patientContext);
+  const pendingBefore = pendingRequiredFields(capturedFieldsSnapshot, patientContext, packId);
   const adviceFlagThisTurn = looksLikeClinicalAdviceRequest(text);
   const systemInstruction = buildSystemInstruction({
     pendingKeys: pendingBefore,
     capturedFieldsSnapshot,
     patientContext,
+    packId,
     adviceFlagThisTurn,
   });
 
@@ -1195,7 +1259,7 @@ export async function runTurnWithContext({
 
   const calledEndInterview = toolCalls.some((tc) => tc.tool === 'end_interview');
   const projected = projectSnapshot(capturedFieldsSnapshot, toolCalls, patientContext);
-  const pendingAfter = pendingRequiredFields(projected, patientContext);
+  const pendingAfter = pendingRequiredFields(projected, patientContext, packId);
 
   if (calledEndInterview && pendingAfter.length > 0) {
     toolCalls = toolCalls.filter((tc) => tc.tool !== 'end_interview');
