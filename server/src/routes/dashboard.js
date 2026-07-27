@@ -91,7 +91,7 @@ const DASHBOARD_HTML_HEAD = `<!doctype html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Riverside Cardiology — Front Desk</title>
+<title>Arya Specialty Intake — Front Desk</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -253,7 +253,7 @@ const DASHBOARD_HTML_HEAD = `<!doctype html>
   <header class="topbar">
     <div class="brand">
       <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l2-6 4 12 2-6h6"/></svg></span>
-      <div><h1>Riverside Cardiology</h1><div class="sub">Front desk · Intake · powered by Arya Health</div></div>
+      <div><h1>Arya Specialty Intake</h1><div class="sub">Multi-specialty front desk · powered by Arya Health</div></div>
     </div>
     <div class="callchip" id="callchip">
       <span class="dot"></span>
@@ -281,6 +281,7 @@ const DASHBOARD_HTML_HEAD = `<!doctype html>
             <div id="readyflag" class="ready-flag neutral"></div>
             <div class="meta">
               <span><span class="k">DOB</span><span class="mono" id="pdob">—</span></span>
+              <span><span class="k">Specialty</span><span id="pspecialty">—</span></span>
               <span><span class="k">Appt</span><span id="pappt">—</span></span>
               <span><span class="k">Phone</span><span class="mono" id="pphone">—</span></span>
             </div>
@@ -380,9 +381,9 @@ var IC = {
 };
 
 // ---------------------------------------------------------------------------------------------
-// Schema-driven presentation layer. FIELD_REQUIRED / requiredKeys come from window.__SCHEMA__
-// (injected server-side from intakeSchema.js) so this can never silently drift from the backend
-// contract. GROUP_DEFS below is purely cosmetic layout/labels curated to match the design.
+// Schema-driven presentation layer. Base schema comes from window.__SCHEMA__, while per-record
+// required/progress math comes from server-computed record.completeness so specialty packs cannot
+// drift from the backend contract. GROUP_DEFS below is purely cosmetic layout/labels.
 // ---------------------------------------------------------------------------------------------
 
 var SCHEMA = window.__SCHEMA__;
@@ -403,6 +404,58 @@ for (var sgi = 0; sgi < SCHEMA.fieldGroups.length; sgi++) {
 function schemaFields(groupName) {
   var group = SCHEMA_GROUPS[groupName];
   return group ? group.fields.slice() : [];
+}
+
+function uniqueStrings(items) {
+  var seen = {};
+  var out = [];
+  (items || []).forEach(function (item) {
+    if (typeof item !== 'string' || seen[item]) return;
+    seen[item] = true;
+    out.push(item);
+  });
+  return out;
+}
+
+function recordCompleteness(record) {
+  return record && record.completeness ? record.completeness : {};
+}
+
+function requiredKeysForRecord(record) {
+  var c = recordCompleteness(record);
+  return uniqueStrings(Array.isArray(c.requiredKeys) && c.requiredKeys.length ? c.requiredKeys : SCHEMA.requiredKeys);
+}
+
+function requiredKeyMap(record) {
+  var map = {};
+  requiredKeysForRecord(record).forEach(function (key) { map[key] = true; });
+  return map;
+}
+
+function isRequiredForRecord(record, key) {
+  return requiredKeyMap(record)[key] === true;
+}
+
+function totalRequiredCount(record) {
+  var c = recordCompleteness(record);
+  return Number.isFinite(c.totalRequired) ? c.totalRequired : requiredKeysForRecord(record).length;
+}
+
+function completenessMissingKeys(record) {
+  var c = recordCompleteness(record);
+  if (Array.isArray(c.missing)) return uniqueStrings(c.missing);
+  return requiredKeysForRecord(record).filter(function (key) {
+    return needsFollowUp(fieldEntry(record, key), key);
+  });
+}
+
+function completenessDeskFollowUpKeys(record) {
+  var c = recordCompleteness(record);
+  return uniqueStrings(
+    (Array.isArray(c.missing) ? c.missing : [])
+      .concat(Array.isArray(c.deskFollowUp) ? c.deskFollowUp : [])
+      .concat(Array.isArray(c.unableToCapture) ? c.unableToCapture : [])
+  );
 }
 
 function concatFields() {
@@ -504,6 +557,12 @@ var GROUP_DEFS = [
     fields: concatFields(schemaFields('relevant_history_update'), schemaFields('patient_questions'))
   },
   {
+    key: 'social_history',
+    label: 'Social history',
+    kind: 'fields',
+    fields: schemaFields('social_history_update')
+  },
+  {
     key: 'admin_followup',
     label: 'Admin follow-up',
     kind: 'admin',
@@ -529,6 +588,7 @@ var PHASE_DEFS = [
   { key: 'visit_reason_update', label: 'Reason' },
   { key: 'safety_updates', label: 'Safety' },
   { key: 'relevant_history', label: 'History' },
+  { key: 'social_history', label: 'Social' },
   { key: 'admin_followup', label: 'Admin' },
   { key: 'prechart_summary', label: 'Pre-chart' }
 ];
@@ -644,6 +704,7 @@ function contextValueFor(record, key) {
   var context = record ? record.preloaded_context || {} : {};
   var groupNames = Object.keys(context);
   for (var i = 0; i < groupNames.length; i++) {
+    if (String(groupNames[i]).indexOf('__') === 0) continue;
     var group = context[groupNames[i]];
     if (!group || typeof group !== 'object') continue;
     if (Object.prototype.hasOwnProperty.call(group, key)) return group[key];
@@ -693,6 +754,7 @@ function firstUsableEntry(record, keys) {
 
 var groupsEl = $('#groups');
 var fieldEls = [];
+var groupEls = {};
 var groupNotes = {};
 var selectedCallSid = null;
 var latestRecords = [];
@@ -714,10 +776,12 @@ function makeFieldEl(label, required, badge) {
 function buildDetailDOM() {
   groupsEl.innerHTML = '';
   fieldEls = [];
+  groupEls = {};
   groupNotes = {};
   GROUP_DEFS.forEach(function (g) {
     var wrap = document.createElement('div');
     wrap.className = 'group';
+    groupEls[g.key] = wrap;
     wrap.innerHTML = '<h3>' + escapeHtml(g.label) + '<span class="ln"></span></h3>';
     if (g.kind === 'verification') {
       var ce = makeFieldEl('Recording & sharing consent', true);
@@ -746,7 +810,7 @@ function buildDetailDOM() {
         var required = g.contextOnly ? false : (FIELD_REQUIRED[key] === true && !meta.optional);
         var fe = makeFieldEl(meta.label, required, g.badge);
         wrap.appendChild(fe.el);
-        fieldEls.push({ el: fe.el, slot: fe.slot, tag: fe.tag, groupKey: g.key, groupKind: g.kind, kind: 'field', fieldKey: key, def: meta, required: required, contextOnly: !!g.contextOnly });
+        fieldEls.push({ el: fe.el, slot: fe.slot, tag: fe.tag, groupKey: g.key, groupKind: g.kind, kind: 'field', fieldKey: key, def: meta, required: required, badge: g.badge, contextOnly: !!g.contextOnly });
       });
     }
     groupsEl.appendChild(wrap);
@@ -756,6 +820,21 @@ function buildDetailDOM() {
   extra.id = 'extra-group';
   extra.style.display = 'none';
   groupsEl.appendChild(extra);
+}
+
+function shouldShowSocialHistoryGroup(record) {
+  var keys = schemaFields('social_history_update');
+  for (var i = 0; i < keys.length; i++) {
+    if (isRequiredForRecord(record, keys[i])) return true;
+    if (fieldEntry(record, keys[i])) return true;
+  }
+  return false;
+}
+
+function updateGroupVisibility(record) {
+  if (groupEls.social_history) {
+    groupEls.social_history.style.display = shouldShowSocialHistoryGroup(record) ? '' : 'none';
+  }
 }
 
 function trackChange(callSid, key, serialized) {
@@ -801,8 +880,8 @@ function adminVisibleKeys(record) {
 
 function adminNeedsDeskKeys(record) {
   if (!record || record.call_status === 'in_progress') return [];
-  return schemaFields('conditional_admin_update').filter(function (key) {
-    return needsFollowUp(fieldEntry(record, key), key);
+  return needsDeskKeys(record).filter(function (key) {
+    return isConditionalAdminKey(key);
   });
 }
 
@@ -814,19 +893,19 @@ function shouldShowAdminField(record, key) {
 // field is still unable_to_capture or entirely absent. While the call is still in progress this
 // is never counted — the patient may simply not have gotten to that question yet.
 function needsDeskKeys(record) {
+  if (!record) return [];
   var active = record.call_status === 'in_progress';
-  var out = [];
-  if (active) return out;
-  SCHEMA.requiredKeys.forEach(function (key) {
-    var entry = fieldEntry(record, key);
-    if (needsFollowUp(entry, key)) out.push(key);
-  });
-  return out;
+  if (active) return [];
+  var fromCompleteness = completenessDeskFollowUpKeys(record);
+  if (fromCompleteness.length) return fromCompleteness;
+  return completenessMissingKeys(record);
 }
 
 function resolvedRequiredCount(record) {
+  var c = recordCompleteness(record);
+  if (Number.isFinite(c.resolved)) return c.resolved;
   var n = 0;
-  SCHEMA.requiredKeys.forEach(function (key) {
+  requiredKeysForRecord(record).forEach(function (key) {
     var entry = fieldEntry(record, key);
     if (isResolvedForProgress(entry, key)) n++;
   });
@@ -842,7 +921,7 @@ function hasAnyData(record) {
 function isGroupResolved(record, groupKey) {
   if (groupKey === 'verification' && record.consent_given !== true) return false;
   if (groupKey === 'prechart_summary') {
-    return resolvedRequiredCount(record) === SCHEMA.requiredKeys.length && needsDeskKeys(record).length === 0;
+    return resolvedRequiredCount(record) === totalRequiredCount(record) && needsDeskKeys(record).length === 0;
   }
   var def = GROUP_DEFS.filter(function (g) { return g.key === groupKey; })[0];
   if (!def) return true;
@@ -850,7 +929,7 @@ function isGroupResolved(record, groupKey) {
   var keys = def.fields || [];
   for (var i = 0; i < keys.length; i++) {
     var key = keys[i];
-    if (FIELD_REQUIRED[key] === false) continue; // optional fields don't gate phase progress
+    if (!isRequiredForRecord(record, key)) continue; // inactive optional fields don't gate phase progress
     var entry = fieldEntry(record, key);
     if (!hasBeenAddressed(entry, key)) return false;
   }
@@ -920,7 +999,7 @@ function renderReadyFlag(record) {
   var el = $('#readyflag');
   if (record.call_status === 'in_progress') {
     el.className = 'ready-flag live';
-    el.innerHTML = 'Call in progress · ' + resolvedRequiredCount(record) + '/' + SCHEMA.requiredKeys.length + ' resolved so far';
+    el.innerHTML = 'Call in progress · ' + resolvedRequiredCount(record) + '/' + totalRequiredCount(record) + ' resolved so far';
     return;
   }
   if (!hasAnyData(record)) {
@@ -974,7 +1053,7 @@ function renderAdminNote(record) {
 
 function summaryContent(record, callActive) {
   var resolved = resolvedRequiredCount(record);
-  var total = SCHEMA.requiredKeys.length;
+  var total = totalRequiredCount(record);
   var needs = needsDeskKeys(record);
   var adminNeeds = adminNeedsDeskKeys(record);
   if (callActive) {
@@ -1035,7 +1114,8 @@ function paintFieldEl(fe, record, callActive) {
     contentHtml = summary.html;
     empty = summary.empty;
   } else {
-    required = fe.required;
+    required = fe.contextOnly ? false : isRequiredForRecord(record, fe.fieldKey);
+    updateReqMarker(fe, required);
     if (fe.groupKind === 'admin' && !shouldShowAdminField(record, fe.fieldKey)) {
       fe.el.style.display = 'none';
       return;
@@ -1054,6 +1134,18 @@ function paintFieldEl(fe, record, callActive) {
   fe.el.classList.toggle('filled', !empty);
   fe.el.classList.toggle('pending', tone === 'wait');
   pulse(fe.el, changed);
+}
+
+function updateReqMarker(fe, required) {
+  var marker = fe.el.querySelector('.reqmark');
+  if (!marker) return;
+  if (fe.badge) {
+    marker.textContent = fe.badge;
+    marker.classList.toggle('opt', !required);
+    return;
+  }
+  marker.textContent = required ? 'Required' : 'Optional';
+  marker.classList.toggle('opt', !required);
 }
 
 function callStatusLabel(status) {
@@ -1096,15 +1188,25 @@ function displayReason(record) {
   return 'Pre-visit intake';
 }
 
+function specialtyLabel(record) {
+  var marker = record && record.preloaded_context && record.preloaded_context.__active_pack__;
+  if (marker && marker.id) return titleCase(marker.id);
+  return 'General intake';
+}
+
+function rosterSubtitle(record) {
+  return specialtyLabel(record) + ' · ' + displayReason(record);
+}
+
 function paintDetail(record) {
   if (!record) {
     $('#pname').textContent = 'No calls yet';
-    $('#pdob').textContent = '—'; $('#pappt').textContent = '—'; $('#pphone').textContent = '—';
+    $('#pdob').textContent = '—'; $('#pspecialty').textContent = '—'; $('#pappt').textContent = '—'; $('#pphone').textContent = '—';
     $('#readyflag').className = 'ready-flag neutral';
     $('#readyflag').textContent = 'Place a call to see it appear here';
     $('#phasestrip').classList.remove('show'); $('#phasestrip').innerHTML = '';
     $('#allergybanner').classList.remove('show'); $('#noticebanner').classList.remove('show');
-    setProgress(0, SCHEMA.requiredKeys.length);
+    setProgress(0, totalRequiredCount(null));
     fieldEls.forEach(function (fe) {
       if (fe.groupKind === 'admin') {
         fe.el.style.display = 'none';
@@ -1115,6 +1217,7 @@ function paintDetail(record) {
       fe.tag.innerHTML = tagHtml('wait', fe.required || fe.kind === 'summary');
       fe.el.classList.remove('filled'); fe.el.classList.add('pending');
     });
+    updateGroupVisibility(null);
     if (groupNotes.admin_followup) groupNotes.admin_followup.textContent = 'No admin follow-up flagged for insurance or contact.';
     $('#extra-group').style.display = 'none';
     updateCallChip(null);
@@ -1127,25 +1230,27 @@ function paintDetail(record) {
   var apptEntry = fieldEntry(record, 'appointment_datetime');
   var phoneEntry = fieldEntry(record, 'phone_number');
   $('#pdob').textContent = dobEntry && hasUsableValue(dobEntry) ? formatFieldValue(dobEntry.value) : '—';
+  $('#pspecialty').textContent = specialtyLabel(record);
   $('#pappt').textContent = apptEntry && hasUsableValue(apptEntry) ? formatFieldValue(apptEntry.value) : (record.appointment_datetime || '—');
   $('#pphone').textContent = formatPhone(phoneEntry && hasUsableValue(phoneEntry) ? formatFieldValue(phoneEntry.value) : record.phone_number) || '—';
 
-  setProgress(resolvedRequiredCount(record), SCHEMA.requiredKeys.length);
+  setProgress(resolvedRequiredCount(record), totalRequiredCount(record));
   renderReadyFlag(record);
   renderPhaseStrip(record);
   renderBanners(record);
   renderExtraFields(record);
   renderAdminNote(record);
   fieldEls.forEach(function (fe) { paintFieldEl(fe, record, callActive); });
+  updateGroupVisibility(record);
   updateCallChip(record);
 
   var name = displayName(record);
   if (callActive) {
-    $('#ctrlmsg').innerHTML = '<b>' + escapeHtml(name) + '</b> · call connected · ' + resolvedRequiredCount(record) + '/' + SCHEMA.requiredKeys.length + ' required';
+    $('#ctrlmsg').innerHTML = '<b>' + escapeHtml(name) + '</b> · call connected · ' + resolvedRequiredCount(record) + '/' + totalRequiredCount(record) + ' required';
   } else {
     var missing = needsDeskKeys(record);
     var msg = '<b>' + escapeHtml(name) + '</b> · ' + callStatusLabel(record.call_status);
-    if (hasAnyData(record)) msg += ' · ' + resolvedRequiredCount(record) + '/' + SCHEMA.requiredKeys.length + ' required';
+    if (hasAnyData(record)) msg += ' · ' + resolvedRequiredCount(record) + '/' + totalRequiredCount(record) + ' required';
     if (missing.length) msg += ' · ' + missing.length + ' to confirm';
     $('#ctrlmsg').innerHTML = msg;
   }
@@ -1183,7 +1288,7 @@ function pillFor(status) {
 function rosterRow(record, status) {
   return '<button class="prow" data-id="' + escapeHtml(record.call_sid) + '">' +
     '<span class="time mono">' + escapeHtml(formatTime(record.created_at)) + '</span>' +
-    '<span class="who"><span class="nm">' + escapeHtml(displayName(record)) + '</span><br><span class="rsn">' + escapeHtml(displayReason(record)) + '</span></span>' +
+    '<span class="who"><span class="nm">' + escapeHtml(displayName(record)) + '</span><br><span class="rsn">' + escapeHtml(rosterSubtitle(record)) + '</span></span>' +
     '<span class="stat">' + pillFor(status) + '</span></button>';
 }
 
