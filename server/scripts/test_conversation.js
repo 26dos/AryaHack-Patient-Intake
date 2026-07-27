@@ -19,7 +19,7 @@ import {
   requiredFieldKeysForPack,
   resolvePackId,
 } from '../src/lib/intakeSchema.js';
-import { dobToDigits, getDemoPatient } from '../src/lib/demoPatients.js';
+import { dobToDigits, getDemoPatient, listDemoPatients, publicDemoPatient } from '../src/lib/demoPatients.js';
 
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env') });
 
@@ -384,6 +384,31 @@ async function runQuestionPackModelSmoke(patient) {
   console.log('PASS: pack model, category union, resolution fallback, and clinic greeting are deterministic.');
 }
 
+async function runDemoPatientSpecialtySmoke() {
+  section('demo patient specialty checks');
+  const patients = listDemoPatients();
+  assert.equal(patients.length, 5);
+  assert.deepEqual(
+    Array.from(new Set(patients.map((item) => item.specialty))).sort(),
+    ['cardiology', 'dermatology', 'nephrology'],
+  );
+
+  for (const id of [
+    'pat-maya-rivera',
+    'pat-daniel-kim',
+    'pat-elena-patel',
+    'pat-sophia-martinez',
+    'pat-omar-hassan',
+  ]) {
+    const demoPatient = getDemoPatient(id);
+    assert.ok(demoPatient, `expected demo patient ${id}`);
+    assert.ok(demoPatient.specialty, `${id} should expose specialty`);
+    assert.equal(publicDemoPatient(demoPatient).specialty, demoPatient.specialty);
+  }
+
+  console.log('PASS: five demo patients expose three specialties and public specialty metadata.');
+}
+
 async function runQuestionPackConversationSmoke() {
   section('question pack conversation checks');
   const baseResolvedSnapshot = snapshotWithResolvedFields(REQUIRED_P0_FIELD_KEYS);
@@ -546,6 +571,7 @@ try {
   assert.ok(patient, 'expected demo patient pat-maya-rivera');
 
   await runQuestionPackModelSmoke(patient);
+  await runDemoPatientSpecialtySmoke();
   await runQuestionPackConversationSmoke();
   await runDeterministicVerificationSmoke(patient);
   await runConsentDeclineSmoke(patient);

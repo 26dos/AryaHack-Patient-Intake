@@ -7,6 +7,7 @@
 const GENERATED_PATIENTS = [
   {
     id: 'pat-maya-rivera',
+    specialty: 'cardiology',
     fullName: 'Maya Rivera',
     dateOfBirth: '1984-09-14',
     preferredLanguage: 'English',
@@ -57,6 +58,7 @@ const GENERATED_PATIENTS = [
   },
   {
     id: 'pat-daniel-kim',
+    specialty: 'cardiology',
     fullName: 'Daniel Kim',
     dateOfBirth: '1978-02-03',
     preferredLanguage: 'English',
@@ -103,6 +105,7 @@ const GENERATED_PATIENTS = [
   },
   {
     id: 'pat-elena-patel',
+    specialty: 'cardiology',
     fullName: 'Elena Patel',
     dateOfBirth: '1991-12-22',
     preferredLanguage: 'English',
@@ -145,6 +148,103 @@ const GENERATED_PATIENTS = [
     needsConfirmation: {
       current_medications: 'Medication list predates the emergency department visit.',
       relevant_conditions: "ED discharge details should be confirmed in the patient's own words.",
+    },
+  },
+  {
+    id: 'pat-sophia-martinez',
+    specialty: 'dermatology',
+    fullName: 'Sophia Martinez',
+    dateOfBirth: '1972-06-18',
+    preferredLanguage: 'English',
+    preferredContactMethod: 'SMS',
+    emailAddress: 'sophia.martinez@example.com',
+    okToLeaveVoicemail: true,
+    phoneEnv: 'DEMO_PATIENT_SOPHIA_PHONE',
+    insurancePayerName: 'Cigna',
+    insuranceMemberId: 'CIG5501932',
+    insuranceGroupNumber: 'DERM-4410',
+    insuranceLastVerifiedAt: '2026-06-30',
+    appointmentDatetime: 'Tuesday, July 28, 2026 at 10:45 AM',
+    clinicName: 'Hudson Dermatology',
+    specialistName: 'Dr. Aisha Bennett, MD',
+    appointmentType: 'New patient dermatology consult',
+    bookingReason: 'Changing mole on left shoulder and full skin check request',
+    referralNote:
+      'Primary care requested dermatology evaluation for changing pigmented lesion on left posterior shoulder.',
+    referringProviderName: 'Dr. Samir Rao, Westside Family Medicine',
+    knownMedications: [
+      'Levothyroxine 75 mcg by mouth every morning',
+      'Vitamin D3 1000 IU daily',
+    ],
+    knownAllergies: [
+      'No known drug allergies on file',
+    ],
+    relevantConditions: [
+      'History of blistering sunburns in childhood',
+      'Hypothyroidism',
+      'Mother had melanoma',
+    ],
+    lastConfirmedAt: {
+      insurance_payer_name: '2026-06-30',
+      insurance_member_id: '2026-06-30',
+      insurance_group_number: '2026-06-30',
+      current_medications: '2026-02-12',
+      known_allergies: '2026-02-12',
+    },
+    needsConfirmation: {
+      current_medications: 'Medication list has not been confirmed since the dermatology referral was placed.',
+      known_allergies: 'Allergy list is older than the referral note.',
+      relevant_conditions: 'Skin cancer family history should be confirmed in the patient\'s own words.',
+    },
+  },
+  {
+    id: 'pat-omar-hassan',
+    specialty: 'nephrology',
+    fullName: 'Omar Hassan',
+    dateOfBirth: '1965-03-09',
+    preferredLanguage: 'English',
+    preferredContactMethod: 'Phone call',
+    emailAddress: 'omar.hassan@example.com',
+    okToLeaveVoicemail: false,
+    phoneEnv: 'DEMO_PATIENT_OMAR_PHONE',
+    insurancePayerName: 'Medicare',
+    insuranceMemberId: 'MCR8842197',
+    insuranceGroupNumber: 'ESRD-204',
+    insuranceLastVerifiedAt: '2026-07-01',
+    appointmentDatetime: 'Wednesday, July 29, 2026 at 8:30 AM',
+    clinicName: 'East River Kidney Care',
+    specialistName: 'Dr. Hannah Cho, MD',
+    appointmentType: 'Dialysis access and nephrology follow-up',
+    bookingReason: 'Review dialysis access site soreness and recent fluid restriction concerns',
+    referralNote:
+      'Dialysis center requested nephrology follow-up after patient reported fistula soreness and difficulty with fluid goals.',
+    referringProviderName: 'East River Dialysis Center',
+    knownMedications: [
+      'Sevelamer carbonate 800 mg with meals',
+      'Amlodipine 5 mg by mouth daily',
+      'Epoetin alfa administered at dialysis',
+    ],
+    knownAllergies: [
+      'Iodinated contrast - itching',
+    ],
+    relevantConditions: [
+      'End-stage renal disease on hemodialysis Monday, Wednesday, Friday',
+      'Left arm AV fistula',
+      'Type 2 diabetes',
+      'Hypertension',
+    ],
+    lastConfirmedAt: {
+      insurance_payer_name: '2026-07-01',
+      insurance_member_id: '2026-07-01',
+      insurance_group_number: '2026-07-01',
+      current_medications: '2026-06-17',
+      known_allergies: '2026-01-22',
+      relevant_conditions: '2026-06-17',
+    },
+    needsConfirmation: {
+      current_medications: 'Medication list should be confirmed against dialysis center notes.',
+      known_allergies: 'Contrast allergy details should be confirmed before access imaging discussions.',
+      relevant_conditions: 'Dialysis schedule and access-site context should be confirmed.',
     },
   },
 ];
@@ -311,6 +411,7 @@ export function publicDemoPatient(patient) {
   if (!patient) return null;
   return {
     id: patient.id,
+    specialty: patient.specialty,
     fullName: patient.fullName,
     dateOfBirth: patient.dateOfBirth,
     preferredLanguage: patient.preferredLanguage,
