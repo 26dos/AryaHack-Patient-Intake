@@ -35,13 +35,28 @@ Build order (each unlocks when its prerequisites close; start at `8ar.1`):
 | `8ar.4` | Validate dermatology and dialysis live call paths | P1 | `8ar.2` |
 | `8ar.5` | Capture live-run findings and follow-up beads | P1 | `8ar.3`, `8ar.4` |
 
-## Next (agreed P1, not started)
+## Next (selected P1 design, not started)
 
 Descriptions in [PRD.md](./PRD.md) Section 7 (Nice-to-Have).
 
+- **Low-confidence speech re-ask** — selected as the next offline-buildable P1 while live validation waits on environment credentials. Design: [PRD.md](./PRD.md) Section 15.
+
+Proposed build order (create beads only after explicit approval):
+
+| Step | Task | Priority | Depends on |
+|------|------|----------|------------|
+| 1 | Design approval: thresholds, retry policy, and call copy | P1 | — |
+| 2 | Add pure speech-confidence classifier | P1 | 1 |
+| 3 | Add offline classifier tests | P1 | 2 |
+| 4 | Integrate confidence layer into `/voice/gather` | P1 | 3 |
+| 5 | Add safer high-risk and emergency behavior | P1 | 4 |
+| 6 | Add event logging for auditability | P1 | 4 |
+| 7 | Regression verification | P1 | 5, 6 |
+
+## Next (agreed P1 backlog, not started)
+
 - **Multi-language support (Spanish first)** — bilingual prompts, TTS voice, and confirmation copy; motivated by the NYC audience.
 - **Live "call-in-progress" dashboard** — required fields populating in real time during the call (today it polls every ~3s).
-- **Low-confidence speech re-ask** — graceful re-ask when speech-to-text confidence is low, instead of guessing.
 - **Patient concerns / questions for the specialist** — partly picked up by the packs work (the dialysis pack turns this topic on); generalize it across specialties.
 
 ## Later (P2 / future — deferred, not blocked)

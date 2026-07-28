@@ -126,7 +126,7 @@ _Live delivery status and sequencing for these items: see [ROADMAP.md](./ROADMAP
 * \[x\] Specialty-specific question packs, including social history where clinically relevant — **built under beads epic `c78`; offline smokes pass; live validation tracked in [ROADMAP.md](./ROADMAP.md)**
 * \[ \] Multi-language support (at least Spanish, since NYC demo audience)  
 * \[ \] Live "call in progress" view on the dashboard (fields populating in real time as the call happens) — strong demo visual  
-* \[ \] Retry logic with a graceful re-ask if STT confidence is low, rather than guessing
+* \[ \] Retry logic with a graceful re-ask if STT confidence is low, rather than guessing — **selected P1 design; see Section 15**
 
 ### **Future Considerations (P2) — do not build, but design so these aren't blocked later**
 
@@ -225,4 +225,54 @@ This assumes roughly 4 hours to the 3:30pm EDT deadline. Adjust the anchor time,
 
 ---
 
-**Next step:** if you want, I can turn Section 5–8 straight into a working repo scaffold (Twilio webhook handler, Supabase schema migration, and the Claude tool-calling conversation loop) so you're writing conversation logic instead of boilerplate for the next hour.
+## **15\. Low-Confidence Speech Re-Ask — Selected P1 Design**
+
+**Status:** Design direction selected 2026-07-28; not implemented. This is the next offline-buildable P1 while live validation waits on environment credentials. The delivery sequence belongs in [ROADMAP.md](./ROADMAP.md) and beads once the work is created.
+
+**Goal:** Add a deterministic pre-LLM speech confidence layer so uncertain Twilio speech is repeated, clarified, or safely failed before Gemini extracts structured intake fields. The feature should improve correctness and auditability, not shorten latency. Confident turns add only local classification overhead; low-confidence turns intentionally add one extra phone turn when guessing would be unsafe.
+
+**Product behavior:**
+
+* **Confident speech:** pass through to the conversation engine with no user-visible change.
+* **Empty, tiny, or obvious noise:** ask a natural repeat prompt: "Sorry, I missed that. Could you say it once more?"
+* **Usable but low-confidence narrative:** ask for a repeat without exposing ASR uncertainty: "Could you say that one more time so I get it right?"
+* **Short high-risk values:** use a precise confirmation only when readback helps, for example: "Just to confirm, was that atorvastatin?" High-risk topics include consent, appointment verification, medications, allergies/reactions, DOB or identity, phone number, insurance IDs, and contact preference.
+* **Corrections:** when the patient corrects a low-confidence readback, send the correction to Gemini rather than the original uncertain transcript.
+* **Explicit emergency language:** do not suppress it because of low confidence; continue to trigger the emergency guardrail.
+* **Ambiguous safety language:** ask one direct clarification: "I may have heard something urgent, like chest pain or trouble breathing. Are you having a medical emergency right now?"
+* **Retry exhaustion:** avoid loops. During interview, one failed re-ask should mark the targeted item `unable_to_capture` or move it to office follow-up; repeated global no-input/noise should end gracefully and tell the patient the office can follow up.
+
+**Technical design:**
+
+1. Add a pure helper module, likely `server/src/lib/speechConfidence.js`, that parses Twilio confidence and classifies each speech turn as `accept`, `repeat`, `confirm_short_value`, `safety_clarify`, or `fail`.
+2. Intercept `SpeechResult` and `Confidence` in `/voice/gather` before calling the Gemini-backed conversation turn.
+3. Bypass the confidence layer for DTMF digits so DOB keypad verification stays deterministic.
+4. Store per-call clarification state in memory, keyed by `CallSid`, with the original transcript, confidence, retry count, prompt context, and created-at timestamp.
+5. Keep the first version coarse-grained: use stage/topic hints and known high-risk moments instead of a large conversation-state refactor.
+6. Do not change the database schema. Use existing `call_events` for audit evidence.
+7. Future refinement can let `conversation.js` return `speechContext` metadata such as risk level and expected topic for the next patient response.
+
+**Initial thresholds:**
+
+* Noise threshold: confidence below `0.35`, empty text, or tiny/noise fragments.
+* General low-confidence threshold: below `0.55`.
+* High-risk confirmation threshold: below `0.75`.
+* Missing Twilio confidence is not automatically low-confidence; fall back to text/noise heuristics.
+
+**Events for auditability:** log outcomes such as `speech_low_confidence`, `speech_reask_prompted`, `speech_reask_resolved`, `speech_reask_failed`, and safety clarification events. Payloads should include confidence, classification, retry count, prompt context, and a short excerpt rather than duplicating full transcripts beyond existing speech-result logging.
+
+**Dashboard scope:** no dashboard UI change is required for this P1. Acceptance can be proven through offline tests and `call_events`. A later dashboard enhancement can expose "speech clarified" or "office follow-up needed" if useful.
+
+**Offline test strategy:** add deterministic classifier tests that do not require Twilio, Gemini, Supabase, or live credentials. Test empty/noise, low-confidence narrative, high-risk thresholds, DTMF bypass, explicit emergency handling, ambiguous safety clarification, retry exhaustion, confirmation, and correction behavior. After implementation, run the new classifier test plus existing offline conversation and Supabase smoke tests with live skips.
+
+**Proposed delivery sequence:**
+
+| Step | Task | Priority | Depends on |
+|------|------|----------|------------|
+| 1 | Design approval: thresholds, retry policy, and call copy | P1 | — |
+| 2 | Add pure speech-confidence classifier | P1 | 1 |
+| 3 | Add offline classifier tests | P1 | 2 |
+| 4 | Integrate confidence layer into `/voice/gather` | P1 | 3 |
+| 5 | Add safer high-risk and emergency behavior | P1 | 4 |
+| 6 | Add event logging for auditability | P1 | 4 |
+| 7 | Regression verification | P1 | 5, 6 |
