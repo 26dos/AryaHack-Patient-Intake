@@ -123,7 +123,7 @@ _Live delivery status and sequencing for these items: see [ROADMAP.md](./ROADMAP
 ### **Nice-to-Have (P1) — build if P0 is done with time to spare**
 
 * \[ \] Patient concerns/questions for the specialist  
-* \[ \] Specialty-specific question packs, including social history where clinically relevant — **approved as the next feature (2026-07-27); in progress; see Section 14**  
+* \[x\] Specialty-specific question packs, including social history where clinically relevant — **built under beads epic `c78`; offline smokes pass; live validation tracked in [ROADMAP.md](./ROADMAP.md)**
 * \[ \] Multi-language support (at least Spanish, since NYC demo audience)  
 * \[ \] Live "call in progress" view on the dashboard (fields populating in real time as the call happens) — strong demo visual  
 * \[ \] Retry logic with a graceful re-ask if STT confidence is low, rather than guessing
@@ -199,9 +199,9 @@ This assumes roughly 4 hours to the 3:30pm EDT deadline. Adjust the anchor time,
 
 ---
 
-## **14\. Specialty Question Packs — Approved Roadmap Feature (in progress)**
+## **14\. Specialty Question Packs — Shipped Roadmap Feature**
 
-**Status:** Approved 2026-07-27 as the next feature after the specialist pre-visit intake epic (which is complete). Tracked in beads under the `packs` epic. This section is the spec; the delivery sequence is at the end.
+**Status:** Built and closed under beads epic `c78` on 2026-07-27 after the specialist pre-visit intake epic. Offline smoke tests passed. Live validation across Twilio, Gemini, Supabase, ElevenLabs, dashboard, and confirmation paths is tracked in [ROADMAP.md](./ROADMAP.md) under beads epic `8ar`.
 
 **Goal:** Make the intake question set adapt to the appointment's specialty instead of the current one-size-fits-all flow. A *question pack* is a small, declarative overlay on the Section 4 intake schema that, for a given specialty: (a) turns on otherwise-optional topics (social/lifestyle history, patient questions for the specialist), (b) adds a short block of specialty-specific interviewer guidance to the system prompt, and (c) tailors the structured reason-for-visit categories. Packs never add new field keys or new tools — they only change which existing topics are active and how the agent is steered, so the single-source-of-truth schema and the cached tool declarations stay intact.
 
@@ -221,7 +221,7 @@ This assumes roughly 4 hours to the 3:30pm EDT deadline. Adjust the anchor time,
 
 **Invariants preserved:** the AI/recording disclosure gate still precedes all medical intake; no silent blanks; deterministic completion (a call ends only when every active required topic is resolved); idempotent writes keyed by `CallSid`; offline-testable pack logic.
 
-**Delivery sequence & live status:** tracked in [ROADMAP.md](./ROADMAP.md) and the `packs` epic in beads (`bd ready` shows the next actionable task) — kept there rather than duplicated here.
+**Delivery sequence & live status:** tracked in [ROADMAP.md](./ROADMAP.md) and beads (`bd ready` shows the next actionable task) — kept there rather than duplicated here.
 
 ---
 

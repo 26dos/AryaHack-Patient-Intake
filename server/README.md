@@ -1,6 +1,6 @@
 # Arya Health — AI Voice Intake Agent
 
-Twilio + Gemini + ElevenLabs + Supabase pre-appointment intake voice agent, per `/Users/aarya/Desktop/hack-arya/PRD.md`.
+Twilio + Gemini + ElevenLabs + Supabase pre-appointment intake voice agent, per [`../PRD.md`](../PRD.md).
 
 ## Setup
 
@@ -16,7 +16,7 @@ Twilio + Gemini + ElevenLabs + Supabase pre-appointment intake voice agent, per 
 
 - Place an outbound call to the verified test number: `npm run test-call`
 - Watch the live dashboard at `$PUBLIC_BASE_URL/` (or `http://localhost:3000/`)
-- Confirmation SMS should arrive within 60s of hangup
+- Confirmation SMS or the configured fallback email should arrive within 60s of hangup
 
 ## Demo patients
 
@@ -28,6 +28,8 @@ Maya Rivera. Additional real test numbers can be supplied with:
 DEMO_PATIENT_MAYA_PHONE=...
 DEMO_PATIENT_DANIEL_PHONE=...
 DEMO_PATIENT_ELENA_PHONE=...
+DEMO_PATIENT_SOPHIA_PHONE=...
+DEMO_PATIENT_OMAR_PHONE=...
 DEMO_PATIENT_ID=pat-maya-rivera
 ```
 
